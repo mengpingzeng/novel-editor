@@ -1,0 +1,6 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "defaultAgent": "chief_editor",
+  "extraAgentsDirs": ["../../.opencode/agents"],
+  "theme": "dark"
+}
