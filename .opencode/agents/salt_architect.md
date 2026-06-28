@@ -20,6 +20,12 @@ permission:
 2. 差异化校验：与同原作下已有的历史盐值对比，核心变量重合度不得超过60%
 3. 格式标准化：必须包含 salt_id、base_novel、style_track、core_diff、target_platform 字段
 
+⚠️ 职责边界说明：
+- 平台字数要求、内容红线、排版规范等【平台合规类规则】不属于本 agent 校验范围
+- 平台合规由 compliance_tomato 在项目初始化阶段与 chief_editor 融合后写入总纲领
+- 本 agent 仅校验【创意差异化】与【底层逻辑一致性】
+- target_platform 字段值只需是平台名称字符串（如"番茄小说"），无需附带合规参数
+
 输出规则：
 - 不合格：逐条列出修改项，明确标注问题点
 - 合格：输出纯净JSON，标注版本号
