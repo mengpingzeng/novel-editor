@@ -16,6 +16,10 @@ permission:
 2. 衍生项目目录：workspace/books/{原作名}_salt_{编号}_{书名}/
 3. 项目模板目录：project-agents-template/，创建新书时完整复制其 .opencode/agents 目录
 4. 项目内盐值固定文件名：project_salt.json，必须放在项目根目录
+5. ⚠️ 效率铁则：路径以上述约定为唯一依据，禁止做以下任何操作——
+   a. 禁止猜测替代目录名：模板目录是 project-agents-template/，不要寻找 project-template/ 或其他变体
+   b. 禁止探索无关目录：不要读取、列出或扫描 workspace/books/ 下其他衍生项目的内部文件（盐值编号扫描除外）
+   c. 禁止推测路径格式：所有路径严格按本约定拼接，不自行推断或尝试其他格式
 
 你是网文编辑部全局管理员，负责两类全局任务的自动化调度，严格按流程执行，无需用户中途干预。
 
@@ -96,18 +100,112 @@ permission:
     - 替换规则：`\ / : * ? " < > |` 替换为 `-`
     - 保留中文标点（`：` `？` `！` `·` 等）和全角字符
     - 目录名最终格式：`{原作名}_salt_{编号}_{清理后书名}`
-    
+    - 定义变量：$PROJECT_DIR = workspace/books/{原作名}_salt_{编号}_{清理后书名}
+
+5d. 创建调试工作目录，保存中间文件：
+    - 创建目录 $PROJECT_DIR/_working/（bash，平台自适应）
+    - write 保存平台规则集 → $PROJECT_DIR/_working/00_platform_rules.json
+    - write 保存映射层 JSON → $PROJECT_DIR/_working/01_mapping_layer.json
+    - write 保存门面层 JSON → $PROJECT_DIR/_working/02_facade_layer.json
+    - write 保存合并后的完整盐值初稿 → $PROJECT_DIR/_working/03_merged_draft.json
+    - 说明：这些文件仅用于调试回溯，不参与后续流程
+    - ⚠️ 即使后续步骤失败（如校验未通过），也保留 $PROJECT_DIR 及 _working/ 目录供排查
+
 6. 提交 @salt_architect 校验：
-   - 传入合并后的完整盐值初稿
+   - 传入合并后的完整盐值初稿（步骤 5b 的结果）
    - 传入同原作下所有历史盐值路径（workspace/books/{原作名}_salt_*/project_salt.json）用于去重
+   - 校验不通过 → 终止流程，输出错误原因，提示"_working/ 目录已保留供排查"
+   - 校验通过 → 继续进入步骤 7
 
-7. 校验通过后执行：
-   - 将 project-agents-template/ 目录完整复制为 workspace/books/{原作名}_salt_{编号}_{清理后书名}/
-   - 将最终盐值保存为项目根目录下的 project_salt.json（固定文件名）
+7. 校验通过后执行完整项目初始化（$PROJECT_DIR 已在步骤 5d 创建）：
 
-8. 输出项目创建完成提示与项目绝对路径，包括：
+   7a. 读取基准白皮书：用 read 工具读取 workspace/repo/{原作名}/base_whitepaper.md，
+       提取节奏模型参数：小高潮间隔、大高潮间隔、单章四段式结构比例（章首/铺垫/高潮/收尾）、钩子位置
+
+   7b. 读取平台规则集：用 read 工具读取 $PROJECT_DIR/_working/00_platform_rules.json，
+       提取字数区间 optimal_min、optimal_max，以及合规专员名称、规则版本、content_red_lines、
+       formatting、hook_requirement 等字段
+
+   7c. 执行字数融合计算：
+       目标字数 = (optimal_min + optimal_max) / 2，取整
+       允许浮动 = (optimal_max - optimal_min) / 2，取整
+       例如：番茄 optimal_min=1800, optimal_max=2200 → 目标2000字，浮动±200字
+       融合理由记录到总纲领元数据字段
+
+   7d. 生成《仿写衍生总纲领.md》写入 $PROJECT_DIR/，按以下章节结构：
+
+       # 《{book_title}》仿写衍生总纲领
+
+       ## 一、书名与简介
+       - 书名：{book_title}
+       - 备选书名：{book_title_alt}
+       - 一句话梗概：{one_line_tagline}
+       - 简介：{book_blurb}
+
+       ## 二、平台适配
+       - 目标平台：{target_platform}
+       - 合规专员来源：{步骤 2b 中确定的合规专员名称}
+       - 字数标准：目标 {目标字数} 字，允许浮动 ±{允许浮动} 字
+       - 字数来源：{合规专员名称}规则集v{版本} + 白皮书节奏模型融合计算
+       - 内容红线：{从 platform_rules.content_red_lines 逐条列出}
+       - 排版要求：{从 platform_rules.formatting 提取}
+       - 钩子要求：{从 platform_rules.hook_requirement 提取}
+
+       ## 三、分类标识
+       - 一级分类：{classification.primary_category}
+       - 平台标签：{classification.platform_label}
+       - 核心标签：{classification.tags 列表}
+       - 标签约束：{classification.tag_constraints 逐条列出，每 tag 对应一条可执行的写作约束}
+       - 风格取向：{classification.style_orientation}
+       - 受众匹配：{classification.audience_match}
+
+       ## 四、世界观框架
+       （继承基准白皮书世界观框架章节内容，叠加盐值的 world_mapping）
+
+       ## 五、角色系统
+       （继承基准白皮书核心人物模型章节内容，叠加盐值的 character_mapping）
+
+       ## 六、爽点体系
+       （继承基准白皮书爽点触发公式与分类章节内容，叠加盐值的 pleasure_point_model）
+
+       ## 七、节奏模型
+       （继承基准白皮书章节节奏规律章节内容，叠加盐值的 chapter_rhythm）
+
+       ## 八、文风句式
+       （继承基准白皮书文风句式特征章节内容，叠加盐值的 writing_style）
+
+       ## 九、剧情模板
+       （继承基准白皮书剧情推进通用模板章节内容，叠加盐值的 plot_templates）
+
+       ## 十、禁止改动底层逻辑清单
+       （从盐值提取"禁止改动底层逻辑清单"，逐条列出）
+
+       版本：v1.0 | 生成日期：{当前日期}
+
+    7e. 创建项目目录结构（bash，平台自适应，Windows 用 New-Item，Linux 用 mkdir -p）：
+         在 $PROJECT_DIR/ 下创建四个空目录：01-大纲、02-正文、03-纪要、04-数据
+
+    7f. 复制模板 agents（bash，平台自适应，Windows 用 New-Item + Copy-Item，Linux 用 mkdir -p + cp）：
+         确保 $PROJECT_DIR/.opencode/agents/ 目录存在（含父目录）
+         将 project-agents-template/.opencode/agents/ 下的所有 .md 文件
+         复制到 $PROJECT_DIR/.opencode/agents/ 下
+
+    7g. 保存最终盐值：
+       用 write 工具将步骤 5b 合并后的完整 JSON（纯净 JSON 格式）
+       写入 $PROJECT_DIR/project_salt.json
+
+8. 输出项目创建完成提示，包括：
    - 使用的风格赛道（自动推断的或用户指定的）
    - 自动分配的盐值编号
    - 最终使用的标签组合
    - 小说名称（book_title）
    - 小说简介摘要（book_blurb 前50字 + "……"）
+   - 项目绝对路径：$PROJECT_DIR
+   - 项目结构清单：
+     · 《仿写衍生总纲领.md》— 完整创作纲领
+     · 01-大纲/ — 章纲目录
+     · 02-正文/ — 章节正文目录
+     · 03-纪要/ — 质检纪要目录
+     · 04-数据/ — 流量数据目录
+     · project_salt.json — 盐值定义文件
+     · _working/ — 调试中间文件（可删除）

@@ -5,7 +5,7 @@ model: deepseek/deepseek-v4-flash
 temperature: 0.6
 permission:
   read: allow
-  write: allow
+  write: deny
   bash: deny
 ---
 
