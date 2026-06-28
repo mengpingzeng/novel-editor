@@ -72,8 +72,8 @@ permission:
 
 ```json
 {
-  "salt_id": "nnbj_xuanhuan_001",
-  "base_novel": "娘娘本纪",
+  "salt_id": "xuanhuan_001",
+  "base_novel": "{原作名}",
   "style_track": "玄幻升级",
   "core_diff": "长文本描述本次映射的创意核心差异",
 
@@ -101,7 +101,7 @@ permission:
   "plot_templates": { ... },
   "parameter_variables": { ... },
   "platform_optimization": { ... },
-  "禁止改动底层逻辑清单": [ ... ]
+  "prohibited_changes": [ ... ]
 }
 ```
 

@@ -28,12 +28,12 @@ permission:
    - tag_constraints 必须覆盖每个 tag，约束描述需可执行（不能是空泛描述）
 4. 书名校验：
    - 必须存在 book_title 字段，不可为空
-   - 长度：5-20字以内（含标点）
-   - 赛道关键词覆盖：书名必须包含至少1个与 style_track 或 classification.tags 相关的核心关键词
-   - 标题差异化：与同原作下已有的历史盐值的 book_title 对比，相似度不得超过60%
-5. 简介校验：
-   - 必须存在 book_blurb 字段，不可为空
-   - 长度：150-300字以内
+    - 长度：5-20字以内（含标点）；若 target_platform 有更严格的长度要求（如番茄5-15字），以平台要求为准
+    - 赛道关键词覆盖：书名必须包含至少1个与 style_track 或 classification.tags 相关的核心关键词
+    - 标题差异化：与同原作下已有的历史盐值的 book_title 对比，相似度不得超过60%
+ 5. 简介校验：
+    - 必须存在 book_blurb 字段，不可为空
+    - 长度：140-300字以内（各平台推荐区间：番茄150-300字/七猫150-300字）
    - 结构完整性：简介必须包含以下要素中至少3项——身份反差/核心钩子、核心冲突、金手指展示、未来期待
    - 红线检查：不得出现涉政、低俗、虚高承诺等违规内容
 6. 格式标准化：必须包含 salt_id、base_novel、style_track、core_diff、target_platform、classification、book_title、book_blurb 字段

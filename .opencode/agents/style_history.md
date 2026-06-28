@@ -75,8 +75,8 @@ permission:
 
 ```json
 {
-  "salt_id": "nnbj_history_001",
-  "base_novel": "娘娘本纪",
+  "salt_id": "history_001",
+  "base_novel": "{原作名}",
   "style_track": "历史穿越",
   "core_diff": "长文本描述本次映射的创意核心差异",
 
@@ -104,7 +104,7 @@ permission:
   "plot_templates": { ... },
   "parameter_variables": { ... },
   "platform_optimization": { ... },
-  "禁止改动底层逻辑清单": [ ... ]
+  "prohibited_changes": [ ... ]
 }
 ```
 
