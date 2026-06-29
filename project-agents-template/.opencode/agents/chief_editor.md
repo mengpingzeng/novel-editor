@@ -37,6 +37,12 @@ permission:
 
 1. 读取 project_salt.json，推导基准白皮书路径，读取基准白皮书
 2a. 从基准白皮书中提取节奏模型参数：小高潮间隔、大高潮间隔、单章四段式结构比例、铺垫占比、钩子位置
+2a+. 从基准白皮书中提取以下 v2.0 新增模块，确保写入总纲领对应章节：
+     - 社会语言层次模型（白皮书§6.5）→ 写入总纲领"文风句式"章节
+     - 角色语言指纹库（白皮书§6.6）→ 写入总纲领"文风句式"章节
+     - 句式模式库（白皮书§6.9）→ 写入总纲领"文风句式"章节
+     - 全局变量清单表（白皮书附录B）→ 写入总纲领"平台适配"章节的数据来源字段
+2a-bis. 从 project_salt.json 提取 volume_rhythm_profile（若存在），该模板定义了赛道专属的卷级节奏阶段划分、里程碑类型、禁止模式；将写入总纲领"节奏模型"章节供 plot_planner 使用
 2b. 根据 project_salt.json 中的 target_platform 字段选择对应的合规专员：
     - "番茄小说" → 调用 @compliance_tomato，传入平台名称
     - "七猫小说" → 调用 @compliance_qimao，传入平台名称
@@ -56,7 +62,8 @@ permission:
     - 标注目标平台与对应合规专员名称，供单章生产SOP中的终审环节调用
     - 分类标识章节：从 project_salt.json 的 classification 字段提取，
       写入总纲领作为显式写作约束。每个 tag 对应一条约束规则
-    - 其他章节继承自基准白皮书 + 盐值设定
+     - 其他章节（世界观、角色、爽点、节奏、文风、剧情模板）继承自基准白皮书 + 盐值设定
+     - "节奏模型"章节额外写入 volume_rhythm_profile（含赛道节奏签名、阶段划分、禁止模式），确保 plot_planner 按赛道专属曲线规划
 4. 创建项目进度文件 ./.opencode/progress.json（初始状态见下方进度追踪章节）
 5. 自动创建 01-大纲、02-正文、03-纪要、04-数据 四个目录
 
@@ -69,7 +76,7 @@ permission:
 对指定范围内的每一章，依次执行：
 
 ```
-Step 1 @plot_planner → 01-大纲/第N章章纲.md
+Step 1 @plot_planner（从 project_salt.json 读取赛道节奏模板）→ 01-大纲/第N章章纲.md
 Step 2 @content_writer → 02-正文/第N章-初稿.md
 Step 3 @quality_reviewer → 审核评分
 Step 4 合规终审（调用初始化SOP确定的合规专员）
@@ -129,9 +136,10 @@ Step 6 更新 progress.json
 ```
 1. 读取 progress.json，确定当前进度
 2. 读取总纲领，确定当前处于全书哪个成长阶段
-3. 调用 @plot_planner（传入"卷规划"标记 + 章节范围）
-4. plot_planner 输出卷纲 + 首批次章纲
-5. 将卷纲信息写入总纲领元数据区域
+3. 调用 @plot_planner（传入"卷规划"标记 + 章节范围 + 当前卷位信息）
+   plot_planner 从 project_salt.json 读取 volume_rhythm_profile 确定赛道专属节奏曲线
+4. plot_planner 输出卷纲 + 首批次章纲（按赛道节奏模板分阶段）
+5. 将卷纲信息（含赛道节奏签名、阶段划分）写入总纲领元数据区域
 6. 按批次启动单章生产SOP
 ```
 
@@ -279,6 +287,7 @@ L3 及以上变更时，自动进行影响评估：
 │ 单章生产速查                          │
 │                                      │
 │ Step1: @plot_planner(第N章章纲)      │
+│   读取盐值赛道节奏模板+总纲领        │
 │   输入：总纲领 + 章号                │
 │   输出：01-大纲/第N章章纲.md         │
 │   重试：3次 | 降级：简化模板自行生成  │
