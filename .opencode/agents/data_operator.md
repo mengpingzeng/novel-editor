@@ -1,7 +1,7 @@
 ---
 description: 流量数据分析与策略调整
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: team-deepseek/deepseek-v4-flash
 temperature: 0.4
 permission:
   read: allow

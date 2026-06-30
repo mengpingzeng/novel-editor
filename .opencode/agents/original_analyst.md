@@ -1,7 +1,7 @@
 ---
 description: 拆解原作小说，输出可复用基准白皮书
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: team-deepseek/deepseek-v4-flash
 temperature: 0.4
 permission:
   read: allow

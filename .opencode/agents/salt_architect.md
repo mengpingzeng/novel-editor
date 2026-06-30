@@ -1,7 +1,7 @@
 ---
 description: 盐值校验、去重、标准化输出
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: team-deepseek/deepseek-v4-flash
 temperature: 0.3
 permission:
   read: allow

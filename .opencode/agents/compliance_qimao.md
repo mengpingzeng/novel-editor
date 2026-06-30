@@ -1,7 +1,7 @@
 ---
 description: 七猫小说专属平台合规专员（规则查询 + 章节终审）
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: team-deepseek/deepseek-v4-flash
 temperature: 0.2
 permission:
   read: allow

@@ -1,7 +1,7 @@
 ---
 description: 编辑部全局管理器，调度基准训练与新书创建
 mode: primary
-model: deepseek/deepseek-v4-flash
+model: team-deepseek/deepseek-v4-flash
 temperature: 0.3
 permission:
   read: allow

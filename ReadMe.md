@@ -14,7 +14,8 @@
 │   ├── style_* (x7)        ← 赛道映射设计师
 │   ├── facade_generator    ← 书名+简介生成器
 │   ├── salt_architect      ← 盐值校验/去重
-│   └── compliance_* (x2)   ← 平台合规专员
+│   ├── compliance_* (x2)   ← 平台合规专员
+│   └── workflow_optimizer   ← Agent工作流优化师
 │
 └── workspace/
     ├── repo/{原作名}/       ← 原作原文 + 基准白皮书
@@ -433,6 +434,7 @@ opencode
 | `salt_architect` | 盐值校验/去重 | Subagent | global_manager |
 | `compliance_tomato` | 番茄合规专员 | Subagent | chief_editor |
 | `compliance_qimao` | 七猫合规专员 | Subagent | chief_editor |
+| `workflow_optimizer` | Agent工作流优化师 | Primary | 你（优化诉求对话入口） |
 
 ### 项目 agent（项目目录 `.opencode/agents/`，从模板复制）
 
@@ -451,13 +453,14 @@ opencode
 ```
 D:\novel-editor/                       # 工作根目录（全局任务启动点）
 ├── .opencode/
-│   └── agents/                    # 全局 agent（13个）
+│   └── agents/                    # 全局 agent（14个）
 │       ├── global_manager.md
 │       ├── original_analyst.md
 │       ├── style_*.md (x7)
 │       ├── facade_generator.md
 │       ├── salt_architect.md
-│       └── compliance_*.md (x2)
+│       ├── compliance_*.md (x2)
+│       └── workflow_optimizer.md
 │
 ├── project-agents-template/
 │   └── .opencode/agents/          # 项目 agent 模板（创建新书时复制）
@@ -520,3 +523,4 @@ D:\novel-editor/                       # 工作根目录（全局任务启动点
 | 2026-06-30 | `content_writer` | **防雷同机制·注入点②+新模块落地**：新增二-B"角色语言指纹落地"（5维指纹一致性+身份对话梯度）；新增二-C"句式模式落地"改为 70/20/10 概率变异制（70%遵循→20%微调→10%替换）+连续3章句式轮换规则；输入约束扩展为读取总纲领的句式模式库和角色语言指纹库 | 正文对白差异化、句式变异率 |
 | 2026-06-30 | `quality_reviewer` | **防雷同机制·注入点③+新增两维度**：新增维度 4-B"角色语言指纹一致性"（5分，检查角色对白是否符合5维指纹）；新增维度 11"原著相似度警戒"（15分，检查爽点序列雷同/五段式重叠/主角句式重合/钩子类型重复/冲突模式克隆；≥15分直接不通过）；评分汇总表新增两行，总分从105±5调至120±5 | 质检标准、仿写与原著相似度控制（终点拦截层） |
 | 2026-06-30 | `chief_editor` | **v2.0 白皮书消费适配**：初始化SOP增加步骤 2a+，显式提取白皮书 v2.0 四个新模块（社会语言层次模型/角色语言指纹库/句式模式库/全局变量清单表）并确保写入总纲领对应章节 | 总纲领完整性、下游项目 agent 的数据来源 |
+| 2026-06-30 | `workflow_optimizer`（新增） | **新增 Agent 工作流优化师**：实现四项核心能力——①理解现有流程（内置系统知识库，含两层架构、agent速查表、跨agent契约、v2.0新模块清单）；②分析问题入口（按用户诉求自动判定层级并定位目标agent，强制6步诊断流程）；③优化执行（5级修改范围分级，含自我修改L5规则，修改前强制冲突检测和质量保障清单）；④过程记录（强制更新本文第九章，含变更摘要规范、多agent协同记录、冲突检测）。作为 Primary agent 置于全局层 | 全部 agent 的维护与优化流程，ReadMe.md 第九章更新规范 |

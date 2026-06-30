@@ -1,7 +1,7 @@
 ---
 description: 女频言情赛道盐值+分类标签设计
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: team-deepseek/deepseek-v4-flash
 temperature: 0.7
 permission:
   read: allow

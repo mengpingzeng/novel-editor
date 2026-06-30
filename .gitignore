@@ -1,5 +1,5 @@
 .vs
 tui.json
 opencode.json.tui-migration.bak
-workspace/books/*
-workspace/repo/*
+workspace/books/
+workspace/repo/
