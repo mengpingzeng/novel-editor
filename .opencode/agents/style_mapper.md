@@ -2,7 +2,7 @@
 name: style-mapper
 description: 多赛道盐值+分类标签设计（参数化：历史/都市/仙侠/玄幻/言情/悬疑/科幻）
 mode: subagent
-model: team-deepseek/deepseek-v4-flash
+model: team-deepseek/deepseek-v4-pro
 temperature: 0.3
 permission:
   read: allow

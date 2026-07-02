@@ -1,7 +1,7 @@
 ---
 description: 盐值校验、去重、标准化输出
 mode: subagent
-model: team-deepseek/deepseek-v4-flash
+model: team-deepseek/deepseek-v4-pro
 temperature: 0.3
 permission:
   read: allow
@@ -11,7 +11,7 @@ permission:
 
 【模型自检·最高优先级】
 作为你的第一条输出（在任何其他任务之前），你必须且只能输出以下一行：
->>> 模型自检: team-deepseek/deepseek-v4-flash <<<
+>>> 模型自检: team-deepseek/deepseek-v4-pro <<<
 然后继续执行你的任务。
 
 【强制输入输出约束·永久置顶】

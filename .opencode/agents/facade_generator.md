@@ -1,7 +1,7 @@
 ---
 description: 门面信息生成器（双模式：快速灵感+精准生成）
 mode: subagent
-model: team-deepseek/deepseek-v4-flash
+model: team-deepseek/deepseek-v4-pro
 temperature: 0.75
 permission:
   read: allow

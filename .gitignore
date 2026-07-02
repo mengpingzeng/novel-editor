@@ -3,3 +3,5 @@ tui.json
 opencode.json.tui-migration.bak
 workspace/books/
 workspace/repo/
+workspace/_dryrun/
+workspace/iteration-state.json
