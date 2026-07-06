@@ -72,7 +72,7 @@ project_salt.json → [chief_editor 初始化] → 仿写衍生总纲领.md
 |------|------|------|
 | `凡人修仙传.txt` | ~15MB | 仙侠/修真 |
 | `斗破苍穹.txt` | ~18MB | 玄幻 |
-| `娘娘本纪.txt` | ~0.9MB | 宫斗/女频（已有白皮书） |
+| `甄嬛传.txt` | ~0.9MB | 宫斗/女频（已有白皮书） |
 | `白夜行.txt` | ~0.9MB | 悬疑 |
 | `赘婿.txt` | ~11MB | 历史/都市 |
 
@@ -250,11 +250,11 @@ CodeBuddy 顶层主对话（你）
   "signing_line": 85,
   "target_chapters": 20,        // dryrun 时为 3
   "expand_chapters": 50,
-  "active_books": ["凡人修仙传","斗破苍穹","娘娘本纪","白夜行","赘婿"],  // dryrun 时仅 ["娘娘本纪"]
+  "active_books": ["凡人修仙传","斗破苍穹","甄嬛传","白夜行","赘婿"],  // dryrun 时仅 ["甄嬛传"]
   "books": {
     "凡人修仙传": { "track": "仙侠", "latest_version": "v3", "round_done": false, "score": null,  "passed": false },
     "斗破苍穹":   { "track": "玄幻", "latest_version": "v3", "round_done": true,  "score": 88,   "passed": true  },
-    "娘娘本纪":   { "track": "女频", "latest_version": "v3", "round_done": true,  "score": 79,   "passed": false },
+    "甄嬛传":   { "track": "女频", "latest_version": "v3", "round_done": true,  "score": 79,   "passed": false },
     "白夜行":     { "track": "悬疑", "latest_version": "v3", "round_done": true,  "score": 90,   "passed": true  },
     "赘婿":       { "track": "历史", "latest_version": "v3", "round_done": false, "score": null,  "passed": false }
   },
@@ -366,7 +366,7 @@ workspace/
 
 | 命令 | 行为 |
 |------|------|
-| `/iterate dryrun` | **快速自测**：仅 1 本书（默认娘娘本纪，体量最小）× 3 章，跑完整闭环一轮（写→审→优化→重写），验证管道无 bug。产物落到独立的 `workspace/_dryrun/` 不污染正式目录 |
+| `/iterate dryrun` | **快速自测**：仅 1 本书（默认甄嬛传，体量最小）× 3 章，跑完整闭环一轮（写→审→优化→重写），验证管道无 bug。产物落到独立的 `workspace/_dryrun/` 不污染正式目录 |
 | `/iterate start` | 从当前状态**自动连跑**多轮，直到 5 本全达标（converged）或被 stop/中断 |
 | `/iterate step` | **只跑一轮**（write→review→optimize），round+1 后停下等检查 |
 | `/iterate stop` | 停止闭环，`status=stopped`，保留全部产物（含当前半成品版本） |
@@ -378,7 +378,7 @@ workspace/
 ### dryrun 自测说明
 
 - **目的**：不是为了写出好小说，而是**验证整条流水线能跑通**——所有角色被正确调用、状态机正确流转、文件正确落盘、GLM-5.2 审稿+优化能正常产出、changelog 能写出。
-- **规模**：1 本书（娘娘本纪，已有白皮书最省时）× 3 章 × 1 轮闭环。
+- **规模**：1 本书（甄嬛传，已有白皮书最省时）× 3 章 × 1 轮闭环。
 - **隔离**：产物写到 `workspace/_dryrun/`，与正式 `workspace/books/` 完全隔离，自测完可整目录删除。
 - **验收点**（dryrun 跑完后人工确认这些都 OK 才算通过）：
   1. 白皮书/盐值/总纲领正确生成
@@ -458,5 +458,5 @@ workspace/
 | 版本策略 | 每轮新目录，绝不清空；半成品 resume 备份为 vN-bk 后从头重跑 | 用户明确要求 |
 | 批次粒度 | 5 本全写完才优化，依据共性问题 | 用户明确要求 |
 | 章节目标 | 先 20 章过关 → 达标后扩 50 章人工验收 | 用户明确要求 |
-| 评测集 | novels/ 下 5 本：凡人修仙传/斗破苍穹/娘娘本纪/白夜行/赘婿 | 用户指定 |
+| 评测集 | novels/ 下 5 本：凡人修仙传/斗破苍穹/甄嬛传/白夜行/赘婿 | 用户指定 |
 

@@ -1,0 +1,46 @@
+{
+  "mode": "step",
+  "phase": "phase1",
+  "current_round": 1,
+  "passing_score": 10,
+  "target_chapters": 5,
+  "active_books": [
+    {
+      "name": "凡人修仙传",
+      "platform": "番茄小说",
+      "track": "仙侠"
+    }
+  ],
+  "books": {
+    "凡人修仙传": {
+      "version": "v1",
+      "status": "writing_done",
+      "score": null,
+      "passed": false
+    },
+    "斗破苍穹": {
+      "version": "v1",
+      "status": "writing_done",
+      "score": null,
+      "passed": false
+    },
+    "甄嬛传": {
+      "version": "v1",
+      "status": "writing_done",
+      "score": null,
+      "passed": false
+    },
+    "白夜行": {
+      "version": "v1",
+      "status": "writing",
+      "score": null,
+      "passed": false
+    },
+    "赘婿": {
+      "version": "v1",
+      "status": "pending",
+      "score": null,
+      "passed": false
+    }
+  }
+}
