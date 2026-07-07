@@ -5,7 +5,9 @@
 #  核心机制:
 #   -    opencode run 是同步阻塞的: agent 完成全部子任务后才返回
 #   - 返回后轮询 .phase(N)_done 标记文件 (最多等 5min, 防异步落盘延迟)
-#   - 每个 Phase 无总时间限制, 可跑数十小时
+#   - 每个 Phase 默认 1h 超时, 单章默认 30min 超时
+#   - 超时后脚本自动退出, 入口层自动重启 (最多 PIPELINE_MAX_ATTEMPTS 次)
+#   - 重启时已完成的步骤自动跳过 (依赖 checkpoint 标记文件)
 #
 #  执行流 (step 模式):
 #   书A: Phase1(框架) → Phase2(写书) → Phase3(审稿)
@@ -18,14 +20,18 @@
 #    bash scripts/run_pipeline.sh step             # 全部 active_books Phase1→2→3
 #
 #  环境变量:
-#    PIPELINE_TIMEOUT  单阶段超时(秒), 0=不限(默认)
+#    PIPELINE_TIMEOUT       单阶段超时(秒), 默认3600(1h), 0=不限
+#    CHAPTER_TIMEOUT        单章超时(秒), 默认1800(30min), 0=不限
+#    PIPELINE_MAX_ATTEMPTS  流水线整体最大重启次数, 默认3
 # ============================================================
 set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODE="${1:-dryrun}"
-TIMEOUT_PER_PHASE="${PIPELINE_TIMEOUT:-0}"
+TIMEOUT_PER_PHASE="${PIPELINE_TIMEOUT:-3600}"
+CHAPTER_TIMEOUT="${CHAPTER_TIMEOUT:-1800}"
+PIPELINE_MAX_ATTEMPTS="${PIPELINE_MAX_ATTEMPTS:-3}"
 POLL_INTERVAL=15
 POLL_TIMEOUT=300
 
@@ -41,6 +47,7 @@ warn()   { echo -e "${YELLOW}[$(date '+%H:%M:%S')] ⚠️  $1${NC}"; }
 fail()   { echo -e "${RED}[$(date '+%H:%M:%S')] ❌ $1${NC}"; }
 
 # ── 执行 opencode run，同步阻塞等待完成 ──
+# 返回值: 0=成功, 124=超时, 其他=失败
 run_phase() {
     local label="$1"
     shift
@@ -63,7 +70,40 @@ run_phase() {
         return 0
     elif [ "$TIMEOUT_PER_PHASE" -gt 0 ] && [ $rc -eq 124 ]; then
         fail "$label — 超时 (${TIMEOUT_PER_PHASE}s)"
+        return 124
+    else
+        fail "$label — 失败 (exit=$rc)"
         return 1
+    fi
+}
+
+# ── 执行章节生产（使用章节级超时） ──
+# 返回值: 同 run_phase (0=成功, 124=超时, 其他=失败)
+run_chapter() {
+    local label="$1"
+    local chapter_timeout="${2:-$CHAPTER_TIMEOUT}"
+    shift 2
+
+    log "启动: $label (超时=${chapter_timeout}s)"
+    log "命令: opencode run --dangerously-skip-permissions $*"
+    echo ""
+
+    local rc
+    if [ "$chapter_timeout" -gt 0 ]; then
+        timeout "$chapter_timeout" opencode run --dangerously-skip-permissions "$@"
+        rc=$?
+    else
+        opencode run --dangerously-skip-permissions "$@"
+        rc=$?
+    fi
+
+    echo ""
+    if [ $rc -eq 0 ]; then
+        success "$label — 完成"
+        return 0
+    elif [ "$chapter_timeout" -gt 0 ] && [ $rc -eq 124 ]; then
+        fail "$label — 超时 (${chapter_timeout}s)"
+        return 124
     else
         fail "$label — 失败 (exit=$rc)"
         return 1
@@ -102,12 +142,10 @@ get_book_version() {
         local max_ver
         max_ver=$(ls -1 "$versions_dir" 2>/dev/null | grep -E '^v[0-9]+$' | sed 's/v//' | sort -n | tail -1)
         if [ -n "$max_ver" ]; then
-            # Phase 2 之后 version 可能已经递增了，用最大版本号
             echo "v$max_ver"
             return
         fi
     fi
-    # 回退：从 .phase1_done 读取
     if [ -f "$book_dir/.phase1_done" ]; then
         python3 -c "import json; d=json.load(open('$book_dir/.phase1_done')); print(d.get('version','$ver'))" 2>/dev/null || echo "$ver"
     else
@@ -130,7 +168,6 @@ run_phase1_for_book() {
         return 1
     fi
 
-    # 备份原始 state，创建只含当前书的临时 state
     cp "$state_file" "$state_backup"
 
     python3 -c "
@@ -145,12 +182,10 @@ with open('$state_file', 'w') as f:
 "
     log "Phase 1 临时 state 已创建: 仅含 $name"
 
-    # 确保中断时恢复 state
     trap "cp '$state_backup' '$state_file' 2>/dev/null; rm -f '$state_backup'" EXIT
 
     run_phase "Phase 1 - $name" "/iterate step" || { cp "$state_backup" "$state_file"; rm -f "$state_backup"; trap - EXIT; return 1; }
 
-    # 恢复原始 state
     cp "$state_backup" "$state_file"
     rm -f "$state_backup"
     trap - EXIT
@@ -203,20 +238,25 @@ run_book_pipeline() {
             return 1
         }
 
-        # Phase 2.1+: 每章独立 session（支持断点续跑）
+        # Phase 2.1+: 每章独立 session（断点续跑）
         ver=$(get_book_version "$book_dir")
         for ((ch=1; ch<=chapters; ch++)); do
             if [ -f "$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md" ]; then
                 warn "跳过第${ch}章（终稿已存在，断点续跑）"
                 continue
             fi
-            run_phase "Phase 2.$ch - $name 第${ch}章" \
+            run_chapter "Phase 2.$ch - $name 第${ch}章" "$CHAPTER_TIMEOUT" \
                 --dir "$book_dir" \
                 --agent chief_editor \
-                "执行第${ch}章生产" || {
+                "执行第${ch}章生产"
+            local ch_rc=$?
+            if [ $ch_rc -eq 124 ]; then
+                fail "$name 第${ch}章 超时，退出流水线等待重启"
+                return 124
+            elif [ $ch_rc -ne 0 ]; then
                 fail "$name 第${ch}章 失败"
                 return 1
-            }
+            fi
         done
 
         # 写完成标记
@@ -265,7 +305,7 @@ with open('$book_dir/.phase2_done', 'w') as f:
 # ═══════════════════════════════════════════════════════
 #  DRYRUN 模式：甄嬛传 × 3章
 # ═══════════════════════════════════════════════════════
-dryrun_all() {
+dryrun_inner() {
     echo "============================================"
     echo "  dryrun — 甄嬛传 × 3章 全流程测试"
     echo "============================================"
@@ -293,7 +333,7 @@ dryrun_all() {
         --agent chief_editor \
         "初始化项目并生成第1卷卷纲" || return 1
 
-    # Phase 2.1-2.3: 每章独立 session（支持断点续跑）
+    # Phase 2.1-2.3: 每章独立 session（断点续跑）
     local dryrun_ver
     dryrun_ver=$(get_book_version "$dryrun_book_dir")
     for ch in 1 2 3; do
@@ -301,10 +341,18 @@ dryrun_all() {
             warn "跳过第${ch}章（终稿已存在，断点续跑）"
             continue
         fi
-        run_phase "Phase 2.$ch dryrun" \
+        run_chapter "Phase 2.$ch dryrun" "$CHAPTER_TIMEOUT" \
             --dir "$dryrun_book_dir" \
             --agent chief_editor \
-            "执行第${ch}章生产" || return 1
+            "执行第${ch}章生产"
+        local ch_rc=$?
+        if [ $ch_rc -eq 124 ]; then
+            fail "dryrun 第${ch}章 超时，退出流水线等待重启"
+            return 124
+        elif [ $ch_rc -ne 0 ]; then
+            fail "dryrun 第${ch}章 失败"
+            return 1
+        fi
     done
 
     # 写完成标记
@@ -339,7 +387,7 @@ with open('$dryrun_book_dir/.phase2_done', 'w') as f:
 # ═══════════════════════════════════════════════════════
 #  STEP 模式：每本书独立跑 Phase 1→2→3
 # ═══════════════════════════════════════════════════════
-step_all() {
+step_inner() {
     local state_file="$ROOT_DIR/workspace/iteration-state.json"
 
     if [ ! -f "$state_file" ]; then
@@ -382,7 +430,10 @@ for b in books:
         result=$(run_book_pipeline "$name" "$platform" "$track" "$chapters")
         local rc=$?
 
-        if [ $rc -eq 0 ] && [ -n "$result" ]; then
+        if [ $rc -eq 124 ]; then
+            fail "$name 超时退出，流水线等待重启"
+            return 124
+        elif [ $rc -eq 0 ] && [ -n "$result" ]; then
             completed_books="$completed_books $name"
         else
             failed_books="$failed_books $name"
@@ -421,41 +472,77 @@ for b in books:
 }
 
 # ═══════════════════════════════════════════════════════
-#  入口
+#  入口 — 带自动重启的重试循环
 # ═══════════════════════════════════════════════════════
 
 cd "$ROOT_DIR" || exit 1
 
-case "$MODE" in
-    dryrun)
-        dryrun_all
-        ;;
-    step)
-        step_all
-        ;;
-    *)
-        echo "用法: bash scripts/run_pipeline.sh {dryrun|step}"
-        echo ""
-        echo "  dryrun    甄嬛传 × 3章 全流程自测"
-        echo "  step      全部 active_books 全流程 (每本书独立 Phase 1→2→3)"
-        echo ""
-        echo "step 模式执行流:"
-        echo "  书A: Phase1(框架) → Phase2(写书) → Phase3(审稿)"
-        echo "  书B: Phase1(框架) → Phase2(写书) → Phase3(审稿)"
-        echo "  ..."
-        echo "  跨书总结"
-        echo ""
-        echo "环境变量:"
-        echo "  PIPELINE_TIMEOUT  单阶段超时秒数 (默认 0=不限)"
-        exit 1
-        ;;
-esac
+ATTEMPT_FILE="$ROOT_DIR/workspace/.pipeline_attempt"
 
-exit_code=$?
-echo ""
-if [ $exit_code -eq 0 ]; then
-    success "流水线完成"
-else
-    fail "流水线异常终止 (exit=$exit_code)"
+# 获取当前是第几次尝试 (1-indexed)
+current_attempt=0
+if [ -f "$ATTEMPT_FILE" ]; then
+    current_attempt=$(cat "$ATTEMPT_FILE" 2>/dev/null || echo 0)
 fi
-exit $exit_code
+
+while [ $current_attempt -lt $PIPELINE_MAX_ATTEMPTS ]; do
+    current_attempt=$((current_attempt + 1))
+    echo "$current_attempt" > "$ATTEMPT_FILE"
+
+    log "══════ Pipeline 第 ${current_attempt}/${PIPELINE_MAX_ATTEMPTS} 次启动 ══════"
+    echo ""
+
+    case "$MODE" in
+        dryrun) dryrun_inner ;;
+        step)   step_inner ;;
+        *)
+            echo "用法: bash scripts/run_pipeline.sh {dryrun|step}"
+            echo ""
+            echo "  dryrun    甄嬛传 × 3章 全流程自测"
+            echo "  step      全部 active_books 全流程 (每本书独立 Phase 1→2→3)"
+            echo ""
+            echo "step 模式执行流:"
+            echo "  书A: Phase1(框架) → Phase2(写书) → Phase3(审稿)"
+            echo "  书B: Phase1(框架) → Phase2(写书) → Phase3(审稿)"
+            echo "  ..."
+            echo "  跨书总结"
+            echo ""
+            echo "环境变量:"
+            echo "  PIPELINE_TIMEOUT       单阶段超时秒数 (默认 3600=1h, 0=不限)"
+            echo "  CHAPTER_TIMEOUT        单章超时秒数 (默认 1800=30min, 0=不限)"
+            echo "  PIPELINE_MAX_ATTEMPTS  流水线最大重启次数 (默认 3)"
+            echo ""
+            echo "超时后自动重启机制:"
+            echo "  单章超时 → 脚本退出 → 自动重启 (最多 PIPELINE_MAX_ATTEMPTS 次)"
+            echo "  重启时已完成的步骤自动跳过 (依赖 checkpoint 标记文件)"
+            echo "  全部尝试耗尽 → 终止, 等待人工排查"
+            rm -f "$ATTEMPT_FILE"
+            exit 1
+            ;;
+    esac
+
+    exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
+        rm -f "$ATTEMPT_FILE"
+        echo ""
+        success "流水线完成 (第 ${current_attempt} 次尝试)"
+        exit 0
+    elif [ $exit_code -eq 124 ]; then
+        if [ $current_attempt -lt $PIPELINE_MAX_ATTEMPTS ]; then
+            warn "流水线超时，${CHAPTER_TIMEOUT}s 后自动重启..."
+            sleep "$CHAPTER_TIMEOUT"
+        else
+            rm -f "$ATTEMPT_FILE"
+            echo ""
+            fail "流水线全部 ${PIPELINE_MAX_ATTEMPTS} 次尝试均超时"
+            fail "请人工检查: 子 agent 卡死点 | chapter 文件状态 | opencode 配置"
+            exit 1
+        fi
+    else
+        rm -f "$ATTEMPT_FILE"
+        echo ""
+        fail "流水线异常终止 (exit=$exit_code, 第 ${current_attempt} 次尝试)"
+        exit $exit_code
+    fi
+done

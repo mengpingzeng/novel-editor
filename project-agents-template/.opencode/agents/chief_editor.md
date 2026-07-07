@@ -25,6 +25,7 @@ permission:
 3. 每一步记录到版本目录下的 `自动化处理日志.md`
 4. 字数标准从总纲领"平台适配"章节读取
 5. 遇到无法解决的异常才暂停并向用户反馈
+6. **输出不可伪造**：子 agent 无产出时绝不写终稿。脚本层通过终稿存在与否判断章节是否完成；无终稿的章节会在下次重启时自动重试
 
 ---
 
@@ -123,6 +124,28 @@ python scripts/novel_metadata.py add-chapter --path "versions/{version}/发布/n
 ### 3e. 纪要保存
 
 质检报告已由 quality_reviewer 写入 `versions/{version}/03-纪要/第{N}章纪要.md`。
+
+### 3f. 输出校验（每次子 agent 调用后强制执行）
+
+**铁则**：每调用完一个子 agent（@plot_planner / @content_writer / @quality_reviewer），必须立即用 bash 验证其宣称的输出文件是否真实存在。
+
+```bash
+expected_output="versions/{version}/XX-目录/第{N}章-XXX.md"
+if [ ! -f "$expected_output" ]; then
+  echo "❌ 子 agent 返回但输出文件不存在: $expected_output" >> "versions/{version}/自动化处理日志.md"
+fi
+```
+
+各步骤的校验文件与无输出时的处理：
+
+| 步骤 | 预期输出文件 | 不存在时的处理 |
+|------|------------|--------------|
+| 3a @plot_planner | `01-大纲/第{N}章章纲.md` | 日志记录 `❌章纲缺失`，重试 1 次 @plot_planner；仍失败则**不继续本章**（不写终稿，自然触发脚本重启时重试） |
+| 3b @content_writer(fresh) | `02-正文/第{N}章-初稿-v1.md` | 日志记录 `❌初稿缺失`，**不写终稿**（脚本重启时重试本章），继续处理下一章 |
+| 3c.a @quality_reviewer | `03-纪要/第{N}章纪要-v{retry+1}.md` | 日志记录 `❌纪要缺失`，视为 score=0（字数不达标）继续循环 |
+| 3c.i @content_writer(rewrite) | `02-正文/第{N}章-初稿-v{retry+1}.md` | 日志记录 `❌重写稿缺失`，直接退出重写循环，取已有 best_version |
+
+**关键原则**：绝不写"假的终稿"。子 agent 没产出 = 终稿不存在 = 脚本下次重启会重试本章。
 
 ---
 
