@@ -16,7 +16,8 @@ permission:
 - 输入4：salt_path — 项目盐值 JSON 文件路径（必填，从文件读取）
 - 输入5：master_outline_path — 总纲输出路径（必填）
 - 输入6：source_name / target_platform / style_track — 小说元信息（必填）
-- 输出：写入 master_outline_path，完成后向调用方仅返回一行：✅ 总纲已生成，{行数}行
+- 输入7（新增）：diff_constraints_path — 差异化约束表 JSON 输出路径（必填，从 00-素材/ 目录推导）
+- 输出：写入 master_outline_path + diff_constraints_path，完成后向调用方仅返回一行：✅ 总纲已生成，{行数}行
 - 禁止将生成的总纲内容作为返回值传递给调用方
 
 你是仿写衍生总纲生成专家。基于基准白皮书、平台规则、门面信息、项目盐值，生成一份完整的《仿写衍生总纲领》。
@@ -299,3 +300,119 @@ permission:
 3. **数据有源**：每一节的内容必须能从输入文件中追溯到具体章节/字段
 4. **继承+叠加**：白皮书内容作为基线（继承），盐值内容作为差异（叠加），两者都要体现
 5. **差异化可见**：anti_similarity 中的三条差异声明必须体现到对应的总纲章节中
+
+---
+
+## 六、差异化约束表生成（强制执行·v3 新增 → v4 升级为 phase 级 + 预检）
+
+> ★ 本步骤在总纲全部 10 节生成完毕后执行。核心变动（v4）：从卷级（36 行）升级为 phase 级（~120 行），并将事件类型重叠度预检从 downstream（destiny_designer）前移到本节。
+
+### 6.1 读取原著结构数据
+
+从白皮书 §一（全书结构地图）中提取：
+- 原著的卷/部划分（每卷的起止章范围）
+- **原著的每 phase 核心事件类型序列**（按盐值 `volume_rhythm_profile.phases` 的章节分组，逐 phase 提取原著对应区间的事件类型关键词序列）
+- 原著每 phase 的核心冲突（一句话概括）
+
+从白皮书 §七（剧情推进通用模板）中提取原著的剧情范式。
+
+### 6.2 提取仿写结构数据
+
+从本总纲中提取：
+- §七（节奏模型）：仿写的卷规划与节奏阶段
+- §九（剧情模板）：仿写的卷级剧情范式
+
+从盐值中提取：
+- `volume_rhythm_profile.phases`：每卷的 phase 划分（名称 + 章节范围 + 核心任务）
+- `core_diff` + `anti_similarity`：全书差异化策略
+
+### 6.3 逐 Phase 事件类型重叠预检（核心新增）
+
+> ★ 本步是整个差异化约束塔的核心——在约束表生成时即完成"事件类型重叠度预检"，将原本由 destiny_designer 承担的 H 项比对工作前置到上游。
+
+对每个 phase 执行以下操作：
+
+a. **提取原著事件类型序列**：从白皮书 §一 中取该 phase 对应章节区间的事件类型关键词，排成序列。例如：
+   ```
+   原著卷1/Phase0(Ch1-9): [测试羞辱 → 奇遇 → 导师觉醒 → 教学 → 突破 → 打脸 → 探索]
+   ```
+
+b. **提取仿写事件类型预期序列**：从本总纲 §九 的仿写剧情范式和盐值 core_diff 中，推导本 phase 的仿写事件类型预期。例如：
+   ```
+   仿写卷1/Phase0(Ch1-9): [测试羞辱 → 夺宅 → 血脉觉醒 → 血脉封印揭示 → 代价突破 → 碾压 → 遗迹探索]
+   ```
+
+c. **逐位比对 & 计分**：
+   - 若同一位置的事件类型相同 + 角色功能相同 → 标记为"同构"，计 1 次重叠
+   - 若事件类型相同但角色功能不同（如"导师觉醒"→"导师"角色换了人设）→ 标记为"近似"，计 0.5 次重叠
+   - 若事件类型不同 → 标记为"偏离"，不计重叠
+   - 若仿写在该位置引入了原著没有的事件类型 → 标记为"新增"，计为 -1 次重叠（奖励差异化）
+
+d. **计算重叠率**：phase 重叠率 = 重叠次数 / phase 内章节数。新增事件带来的负分抵扣最多不超过 phase 章节数的 20%（防止一个"新增"抵掉所有的"同构"）。
+
+e. **判定**：
+
+   | 重叠率 | 判定 | 行为 |
+   |:---:|:---:|:---|
+   | < 20% | ✅ SAFE | 该 phase 差异化充分，约束表写入基础的禁止清单即可 |
+   | 20-35% | ⚠️ CAUTION | 该 phase 存在中度重叠——约束表中必须至少写入 1 条具体的"禁止事件类型映射" + 1 条"强制新事件类型" |
+   | 35-50% | 🔴 DANGER | 该 phase 高度重叠——约束表写入 ≥2 条禁止映射 + ≥2 条强制新事件类型 + 写入 `"danger": true` 标记。下游 destiny_designer 的 H 项对此 phase 执行严格检查 |
+   | > 50% | ❌ PRE-FAIL | 该 phase 在约束阶段即判定失败——退回 §九（剧情模板）重新设计本 phase 的仿写剧情范式，直至重叠率降至 50% 以下方可继续 |
+
+f. **若某 phase 为 PRE-FAIL**：记录到约束表的 `global_constraints.writer_note` 中作为"需人工复核的 phase"，然后以降级值（50%）作为该 phase 的 `required_min_overlap_rate`。不阻塞总纲的整体输出（因为全部 phase 逐一通过不现实，PRE-FAIL 仅表示"这个 phase 差异化不足但暂不阻塞——下游需特别关注"）。
+
+### 6.4 生成 Phase 级差异化约束表 JSON
+
+写入 `diff_constraints_path`，严格按以下结构。**每 phase 逐条填充，禁止合并，禁止占位符。**
+
+```json
+{
+  "version": "2.0",
+  "base_novel": "{白皮书的书名}",
+  "derivative_novel": "{门面中的书名}",
+  "phase_differentiation": [
+    {
+      "volume": 1,
+      "phase_index": 0,
+      "phase_name": "{盐值 phases[0].name，如'觉醒期'}",
+      "chapter_range": "Ch1-Ch9",
+      "original_event_type_sequence": ["{逐章列出原著对应区间的核心事件类型关键词——这是预检的基础数据}"],
+      "expected_derivative_event_type_sequence": ["{逐章列出本仿写预期的事件类型关键词——这是预检的比对目标}"],
+      "overlap_rate": "{预检结果：0.0~1.0}",
+      "overlap_assessment": "{SAFE/CAUTION/DANGER/PRE-FAIL}",
+      "ban_forbidden_event_mapping": ["{从原著事件类型中，标记那些如果仿写也使用同样事件类型就构成风险的条目。CAUTION 时需要 ≥1 条，DANGER 时需要 ≥2 条}"],
+      "required_new_event_types": ["{本 phase 强制要求引入的、原著没有的事件类型。CAUTION 时需要 ≥1 个，DANGER 时需要 ≥2 个}"],
+      "required_min_overlap_rate": "{0.20~0.50。CAUTION=0.35，DANGER=0.25，PRE-FAIL=0.50（降级值）}",
+      "differentiation_dimensions": ["{逐条写出本 phase 与原著对应区间的差异维度，必须可验证}"],
+      "high_risk_original_nodes": ["{本 phase 对应的原著阶段中，最需规避的辨识度节点。从白皮书 §X 提取（若存在），否则从 §一 提取}"],
+      "danger": "{true/false——来自预检 DANGER/PRE-FAIL 的标记，destiny_designer H 项将对此 phase 执行严格检查}",
+      "notes": "{本 phase 差异化的关键提醒}"
+    }
+  ],
+  "global_constraints": {
+    "max_consecutive_similar_events": 3,
+    "opening_differentiation_bonus": "前 5 章差异度应≥30%，10 章后应≥50%，全书整体应与原著的事件类型序列有实质性偏离",
+    "forbidden_direct_mappings": ["{逐条列出禁止与原著形成 1:1 映射的高辨识度节点，至少 3 条。从各 phase 的 ban_forbidden_event_mapping 中统合}"],
+    "writer_note": "{预检中 PRE-FAIL 的 phase 列表 + 任何全局提醒}"
+  },
+  "differentiation_escalation": "前 5 章差异度应≥30%，10 章后应≥50%，30 章后应建立独立的剧情生态"
+}
+```
+
+### 6.5 关键约束
+
+1. **Phase 级粒度**：`phase_differentiation` 数组中的条目数 = 全书总 phase 数（每卷 3-5 个 phase × 全书卷数 = ~100-180 行，近似 ~120 行）。每 phase 一行，不可省略。
+2. **差异化必须可验证**：`differentiation_dimensions` 中的每条差异，必须能在后续的 destiny_designer 中被验证。
+3. **禁止性约束优先**：约束表主要是告诉下游 agent"不要做什么"（`ban_forbidden_event_mapping` + `high_risk_original_nodes`），其次才是"必须做什么"（`required_new_event_types`）。
+4. **预检是硬核**：预检结果直接嵌入约束表（`overlap_rate` + `overlap_assessment` + `danger` 标记），供 destiny_designer 的 H 项使用——destiny 不再自己做 H1 类型比对，只检查约束表中被标记为 `danger: true` 的 phase 是否得到了解决。
+5. **新事件类型 vs 禁止事件映射**：它们是同一个硬币的两面——`ban_forbidden_event_mapping` 说"你不能做这些"，`required_new_event_types` 说"你必须做这些替代的"。
+6. **writer_note**：记录预检中的 PRE-FAIL phase + "本文件由 master_outline_generator 自动生成。差异化约束由上游匹配，destiny_designer 仅需遵循本表即可。若某 phase 的差异化方向与盐值的 core_diff 冲突，以盐值为准。"
+
+### 6.6 完成后
+
+- 确认 diff_constraints_path 文件已写入
+- 确认 phase_differentiation 条目数 = 全书 phase 总数
+- 确认每 phase 的 `ban_forbidden_event_mapping` + `required_new_event_types` 与该 phase 的 `overlap_assessment` 要求匹配（CAUTION ≥1+1，DANGER ≥2+2，SAFE 可豁免）
+- 确认各 phase 的 `overlap_rate` 值已填入（来自预检）
+- 确认 global_constraints.forbidden_direct_mappings 至少 3 条
+- 向调用方返回时汇报：`✅ 总纲已生成，{行数}行 | 差异化约束表：{phase数} phase（{CAUTION数} CAUTION / {DANGER数} DANGER / {PREFAIL数} PRE-FAIL）`
