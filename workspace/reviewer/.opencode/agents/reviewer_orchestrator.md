@@ -124,6 +124,21 @@ workspace/books/{书名}/versions/{version}/.phase3_done
 }
 ```
 
+**V3**：同步更新全局状态（`workspace/iteration-state.json`）：
+```bash
+python3 -c "
+import json
+with open('workspace/iteration-state.json') as f:
+    s = json.load(f)
+book_name = '{书名}'
+if book_name in s.get('books', {}):
+    s['books'][book_name]['phase'] = 'phase3_done'
+    s['books'][book_name]['score'] = {signing_score}
+    s['books'][book_name]['passed'] = {signing_passed}
+with open('workspace/iteration-state.json', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
+"
+
 ---
 
 ## 模式二：跨书总结分析

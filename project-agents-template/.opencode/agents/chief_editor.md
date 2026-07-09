@@ -26,12 +26,16 @@ permission:
 4. 字数标准从总纲领"平台适配"章节读取
 5. 遇到无法解决的异常才暂停并向用户反馈
 6. **输出不可伪造**：子 agent 无产出时绝不写终稿。脚本层通过终稿存在与否判断章节是否完成；无终稿的章节会在下次重启时自动重试
+7. **v3 铁则·命运设计强制**：没有成功生成的注入包，绝不允许进入卷纲规划和章纲生成。若 @destiny_designer 失败或输入文件不全，必须暂停流水线并报告原因，禁止以任何形式降级为不确定性生成
 
 ---
 
 ## 一、初始化 SOP（首次运行自动执行）
 
-1. 确定当前版本目录：扫描 `versions/` 取最新版本号，设为 `{version}`
+1. 确定当前版本目录：
+   - 优先读取 `workspace/iteration-state.json` 中 `books.{书名}.version`（V3 状态驱动）
+   - 若 state JSON 中未设置，扫描 `versions/` 取最新版本号
+   - 设为 `{version}`
 2. 读取 `versions/{version}/project_salt.json`，提取 `base_novel`、`target_platform`、`classification`、`volume_rhythm_profile`（如有）
 3. 从基准白皮书提取节奏模型 + v2.0 模块（社会语言层次、角色语言指纹库、句式模式库、全局变量清单）：读取 `versions/{version}/00-素材/base_whitepaper.md`
 4. 创建版本目录结构（若不存在）：
@@ -52,6 +56,94 @@ permission:
    | {now} | 流水线启动 | chief_editor | team-deepseek/deepseek-v4-flash | 进行中 |
    ```
 
+### 1.5 加载本卷注入包（强制·v3 上帝视角命运设计）
+
+> ⚠️ 铁则：没有注入包 = 不允许继续写作。不确定性生成在 v3 中被视为不符合质量标准。
+
+**两阶段检查**：先确保全局命运（00+01+03+04）存在，再确保本卷注入包（02+05）存在。
+
+---
+
+**阶段 A：检查全局命运（00+01+03+04）**
+
+1. 检查以下全局命运文件是否存在：
+   - `versions/{version}/上帝之眼/00-全书命运总谱.md`
+   - `versions/{version}/上帝之眼/01-人物命运谱/`（目录非空）
+   - `versions/{version}/上帝之眼/03-伏笔命运谱/全书伏笔网络.md`
+   - `versions/{version}/上帝之眼/04-世界观展开谱/世界观展开节奏.md`
+
+2. 若任一缺失 → 需要生成全局命运：
+   - 2a. 检查 Phase 1 输入文件是否就绪（同原步骤 3a）
+   - 2b. 若就绪 → 调用 @destiny_designer，传入 `global_only=true`
+     ```
+     @destiny_designer
+       whitepaper_path = versions/{version}/00-素材/base_whitepaper.md
+       salt_path = versions/{version}/project_salt.json
+       master_outline_path = versions/{version}/仿写衍生总纲领.md
+       output_dir = versions/{version}/上帝之眼/
+       global_only = true
+     ```
+   - 2c. 若失败 → 暂停流水线，报告错误
+   - 2d. 日志记录：`| {now} | 全局命运生成 | @destiny_designer | — | ✅(全局命运已生成，00/01/03/04) |`
+
+3. 若全部存在 → 日志记录：`| {now} | 全局命运检查 | chief_editor | — | ✅(已存在，跳过) |`
+
+---
+
+**阶段 B：检查本卷注入包（02+05）**
+
+4. 检查本卷文件是否存在：
+   - `versions/{version}/上帝之眼/02-剧情命运谱/卷0X-剧情.md`
+   - `versions/{version}/上帝之眼/05-卷级注入/卷0X-注入包.md`
+
+5. 若任一缺失 → 需要生成本卷数据：
+   - 5a. 确保阶段 A 已完成（00+01+03+04 全部存在）
+   - 5b. 调用 @destiny_designer，传入 `rebuild_volume={X}`
+     ```
+     @destiny_designer
+       whitepaper_path = versions/{version}/00-素材/base_whitepaper.md
+       salt_path = versions/{version}/project_salt.json
+       master_outline_path = versions/{version}/仿写衍生总纲领.md
+       output_dir = versions/{version}/上帝之眼/
+       rebuild_volume = {X}
+     ```
+   - 5c. 等待完成并验证自检报告
+   - 5d. 日志记录：`| {now} | 卷{X}命运生成 | @destiny_designer | — | ✅(卷{X} 02+05 已生成) |`
+
+6. 若本卷 02+05 存在但校验失败（步骤 6a）→ 日志记录并建议重建：
+   ```
+   | {now} | 卷{X}注入包校验 | chief_editor | — | ⚠️(注入包与02不一致，建议 rebuild_volume={X}) |
+   ```
+
+---
+
+**阶段 C：加载注入包**
+
+7. 读取 `versions/{version}/上帝之眼/05-卷级注入/卷0X-注入包.md` 全文
+8. 注入包包含以下关键字段，在后续卷规划/章纲生成中作为附加约束：
+   - 本卷可接触角色及其本卷状态（§2）
+   - 本卷确定性事件链（§3 的逐章事件表）
+   - 本卷需埋设的伏笔清单（§4）
+   - 本卷爽点约束提示（§5）
+   - 本卷不可触碰内容（§6）
+   - 本卷写作约束（§7）
+9. **同步校验（强制执行）**：
+   a. 校验注入包事件链与 02 源数据一致：
+      ```bash
+      INJECTION="versions/{version}/上帝之眼/05-卷级注入/卷0X-注入包.md"
+      SOURCE="versions/{version}/上帝之眼/02-剧情命运谱/卷0X-剧情.md"
+      [ ! -f "$SOURCE" ] && echo "⚠️ 02源文件不存在" && continue
+      inj_lines=$(grep -c "^|" "$INJECTION" 2>/dev/null || echo 0)
+      src_lines=$(grep -c "^|" "$SOURCE" 2>/dev/null || echo 0)
+      if [ "$inj_lines" != "$src_lines" ]; then
+        echo "❌ 注入包事件链行数($inj_lines) ≠ 02源数据行数($src_lines)，注入包可能过期" >> "versions/{version}/自动化处理日志.md"
+        echo "建议：重新运行 @destiny_designer rebuild_volume={X} 重建注入包" >> "versions/{version}/自动化处理日志.md"
+      fi
+      ```
+   b. 校验注入包 §4 伏笔 ID 在 03 中存在：
+      - 若注入包 §4 中列出伏笔 ID，但 `03-伏笔命运谱/全书伏笔网络.md` 中无对应条目 → 日志记录 "❌ 注入包伏笔ID {X} 在03中无定义"
+10. 日志记录：`| {now} | 注入包加载 | chief_editor | — | ✅(启用确定性注入模式 — 卷{0X}) |`
+
 ---
 
 ## 二、卷纲规划
@@ -61,7 +153,11 @@ permission:
    ```
    | {now} | 第X卷卷纲 | plot_planner | team-deepseek/deepseek-v4-flash | 进行中 |
    ```
-3. 调用 @plot_planner（卷规划模式），传入：`versions/{version}/仿写衍生总纲领.md` + 卷号 + `versions/{version}/project_salt.json` 路径
+3. 调用 @plot_planner（卷规划模式），传入：
+   - `versions/{version}/仿写衍生总纲领.md`
+   - 卷号
+   - `versions/{version}/project_salt.json` 路径
+   - （若步骤1.5加载了注入包）传入注入包中关键字段作为附加约束（角色状态/阶段划分/事件骨架/伏笔清单/爽点预算/不可触碰内容）
    - 输出：`versions/{version}/01-大纲/01-卷纲/卷纲-第X卷.md`
    - 日志标记"✅"
 
@@ -79,7 +175,12 @@ permission:
    total=$(cat "versions/{version}/仿写衍生总纲领.md" "versions/{version}/03-纪要/"*.md 2>/dev/null | wc -c)
    python scripts/novel_metadata.py record-input --path "versions/{version}/input_monitor.json" --stage "plot_planner" --chapter {N} --bytes $total
    ```
-3. 调用 @plot_planner → `versions/{version}/01-大纲/第{N}章章纲.md`，日志标记"✅"
+3. 调用 @plot_planner（章纲模式）：
+   - 传入 `versions/{version}/仿写衍生总纲领.md` + 章号{N}
+   - （若本卷有注入包）传入注入包中本章对应的事件行（核心事件/出场角色/伏笔约束/爽点类型）
+   - （若本卷有注入包）传入注入包中本卷可接触角色的当前状态描述
+   - 输出：`versions/{version}/01-大纲/第{N}章章纲.md`
+   - 日志标记"✅"
 
 ### 3b. 正文初稿（mode=fresh）
 
@@ -170,6 +271,20 @@ fi
      "timestamp": "{now}"
    }
    ```
+   **V3**：同步更新全局状态（`workspace/iteration-state.json`）：
+   ```bash
+   python3 -c "
+import json
+with open('../../workspace/iteration-state.json') as f:
+    s = json.load(f)
+# 从当前目录名提取书名
+import os
+book_name = os.path.basename(os.getcwd())
+if book_name in s.get('books', {}):
+    s['books'][book_name]['phase'] = 'phase2_done'
+with open('../../workspace/iteration-state.json', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
+"
 3. 输出完成摘要：
    ```
    ═══════════════════════════════════
