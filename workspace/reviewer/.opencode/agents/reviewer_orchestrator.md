@@ -10,6 +10,8 @@ permission:
   glob: allow
   grep: allow
   bash: allow
+  skill:
+    "*": allow
   task:
     "*": allow
 ---
@@ -41,7 +43,7 @@ opencode run --dir workspace/reviewer/ --agent reviewer_orchestrator --auto "审
 | 1b | @master_outline_reviewer | `仿写衍生总纲领.md` + `project_salt.json` | `仿写衍生总纲领-审核报告.md` |
 | 1c | @volume_outline_reviewer | `01-大纲/01-卷纲/卷纲-第X卷.md` + `仿写衍生总纲领.md` | `01-大纲/01-卷纲/卷纲-第X卷-审核报告.md`（每卷） |
 | 1d | @chapter_outline_reviewer | `01-大纲/第N章章纲.md` + `仿写衍生总纲领.md` | `01-大纲/第N章章纲-审核报告.md`（每章） |
-| 1e | @input_monitor | `input_monitor.json` | `输入监控评分报告.md` |
+| 1e | 加载 `input-monitor` skill | `input_monitor.json` | `输入监控评分报告.md` |
 
 ### Step 2：签约审稿（GLM 5.2）
 
@@ -78,7 +80,7 @@ opencode run --dir workspace/reviewer/ --agent reviewer_orchestrator --auto "审
 | L3 卷纲（均分） | {avg_score} | {rating} | volume_outline_reviewer | GLM 5.2 |
 | L4 章纲（均分） | {avg_score} | {rating} | chapter_outline_reviewer | GLM 5.2 |
 | L5 章内容（均分） | {avg_score} | {rating} | quality_reviewer | V4 Flash |
-| L6 输入监控 | {score} | {rating} | input_monitor | V4 Flash |
+| L6 输入监控 | {score} | {rating} | input-monitor skill | — |
 | L7 签约审稿 | {score} | {passed/not_passed} | signing_reviewer | GLM 5.2 |
 | L8 流程审计 | {score} | {rating} | pipeline_auditor | GLM 5.2 |
 
@@ -158,7 +160,7 @@ opencode run --dir workspace/reviewer/ --auto "生成跨书总结报告 version=
    - 根因分析（框架层 / 执行层）
    - 输入监控跨书对比
    - 优化建议（按优先级）
-4. 产出：`workspace/总结性审核报告-{version}.md`
+ 4. 产出：`workspace/总结性审核报告-{version}.md`
 
 ---
 

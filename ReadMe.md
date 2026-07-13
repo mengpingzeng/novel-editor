@@ -435,6 +435,7 @@ opencode
 | `compliance_tomato` | 番茄合规专员 | Subagent | chief_editor |
 | `compliance_qimao` | 七猫合规专员 | Subagent | chief_editor |
 | `workflow_optimizer` | Agent工作流优化师 | Primary | 你（优化诉求对话入口） |
+| `destiny_designer` | 上帝视角命运设计师 | Subagent | chief_editor（Phase 1.5·自动触发） |
 
 ### 项目 agent（项目目录 `.opencode/agents/`，从模板复制）
 
@@ -445,6 +446,7 @@ opencode
 | `content_writer` | 正文撰稿师 | Subagent | chief_editor |
 | `quality_reviewer` | 质检编审 | Subagent | chief_editor |
 | `data_operator` | 数据运营师 | Subagent | chief_editor |
+| `destiny_designer` | 上帝视角命运设计师 | Subagent | chief_editor（首次运行自动触发） |
 
 ---
 
@@ -453,13 +455,14 @@ opencode
 ```
 D:\novel-editor/                       # 工作根目录（全局任务启动点）
 ├── .opencode/
-│   └── agents/                    # 全局 agent（14个）
+│   └── agents/                    # 全局 agent（15个）
 │       ├── global_manager.md
 │       ├── original_analyst.md
 │       ├── style_*.md (x7)
 │       ├── facade_generator.md
 │       ├── salt_architect.md
 │       ├── compliance_*.md (x2)
+│       ├── destiny_designer.md
 │       └── workflow_optimizer.md
 │
 ├── project-agents-template/
@@ -468,7 +471,8 @@ D:\novel-editor/                       # 工作根目录（全局任务启动点
 │       ├── plot_planner.md
 │       ├── content_writer.md
 │       ├── quality_reviewer.md
-│       └── data_operator.md
+│       ├── data_operator.md
+│       └── destiny_designer.md
 │
 ├── workspace/
 │   ├── repo/                      # 原作基准库
@@ -524,3 +528,6 @@ D:\novel-editor/                       # 工作根目录（全局任务启动点
 | 2026-06-30 | `quality_reviewer` | **防雷同机制·注入点③+新增两维度**：新增维度 4-B"角色语言指纹一致性"（5分，检查角色对白是否符合5维指纹）；新增维度 11"原著相似度警戒"（15分，检查爽点序列雷同/五段式重叠/主角句式重合/钩子类型重复/冲突模式克隆；≥15分直接不通过）；评分汇总表新增两行，总分从105±5调至120±5 | 质检标准、仿写与原著相似度控制（终点拦截层） |
 | 2026-06-30 | `chief_editor` | **v2.0 白皮书消费适配**：初始化SOP增加步骤 2a+，显式提取白皮书 v2.0 四个新模块（社会语言层次模型/角色语言指纹库/句式模式库/全局变量清单表）并确保写入总纲领对应章节 | 总纲领完整性、下游项目 agent 的数据来源 |
 | 2026-06-30 | `workflow_optimizer`（新增） | **新增 Agent 工作流优化师**：实现四项核心能力——①理解现有流程（内置系统知识库，含两层架构、agent速查表、跨agent契约、v2.0新模块清单）；②分析问题入口（按用户诉求自动判定层级并定位目标agent，强制6步诊断流程）；③优化执行（5级修改范围分级，含自我修改L5规则，修改前强制冲突检测和质量保障清单）；④过程记录（强制更新本文第九章，含变更摘要规范、多agent协同记录、冲突检测）。作为 Primary agent 置于全局层 | 全部 agent 的维护与优化流程，ReadMe.md 第九章更新规范 |
+| 2026-07-07 | `destiny_designer`（新增） | **新增上帝视角命运设计师（Phase 1.5）**：mode=subagent（由 chief_editor 自动触发）。在 Phase 1（框架生成）完成后、Phase 2（正文写作）开始前，为整本小说一次性生成完整的"上帝之眼"命运设计书。输出包含：00-全书命运总谱、01-人物命运谱（每个命名角色独立文件·性格形成原因/各卷状态变化/独立动机/独立人生叙事）、02-剧情命运谱（每卷逐章确定性事件链·WHAT而非HOW）、03-伏笔命运谱（A/B/C三级伏笔的完整编织网络）、04-世界观展开谱（每卷该揭示什么/不该揭示什么）、05-卷级注入（每卷一份·唯一暴露给写作agent的入口·不含未来卷剧透）。内置4层自检门禁（文件存在性/逐章细化度/跨文件一致性/叙事一致性），全部通过才允许输出。文件部署于 project-agents-template/.opencode/agents/（随项目创建自动部署）+ .opencode/agents/（全局参考） | 新增 Phase 1.5 层；Phase 2 写作流水线的 plot_planner 从"从零设计"改为"在确定性骨架上细化"（双模式兼容） |
+| 2026-07-07 | `chief_editor` | **注入包强制机制**：初始化 SOP §1.5 改为强制逻辑——①检测注入包存在则加载；②不存在且 Phase 1 输入就绪则自动调用 @destiny_designer；③@destiny_designer 失败或输入不全→**暂停流水线并报告原因，禁止降级为不确定性生成**。新增核心原则第7条"v3 铁则·命运设计强制" | 首次运行自动触发 Phase 1.5；无注入包=不允许写作 |
+| 2026-07-07 | `plot_planner` | **新增"确定性细化模式"分支**：新增 §0「确定性细化模式」——当调用方传入注入包内容时启用此模式。卷规划行为从"从天零设计卷级阶段"改为"在注入包给定的阶段划分和事件轮廓上填充细节"；章纲规划行为从"根据上下文推理事件"改为"从注入包确定性事件链读取本章核心事件→设计五段式展开"。原有标准模式完整保留，注入包不存在时自动降级。新增输入字段声明 + 冲突处理优先级规则 | 正文章纲生成的事件来源从"推理"变更为"注入包骨架+创作细化"的双层模型 |

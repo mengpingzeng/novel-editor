@@ -1,13 +1,14 @@
 #!/bin/bash
 # ============================================================
-#  V2 写作流水线串联脚本
+#  V3 写作流水线串联脚本
 #
 #  核心机制:
-#   -    opencode run 是同步阻塞的: agent 完成全部子任务后才返回
-#   - 返回后轮询 .phase(N)_done 标记文件 (最多等 5min, 防异步落盘延迟)
+#   - opencode run 是同步阻塞的: agent 完成全部子任务后才返回
+#   - 断点续跑通过 iteration-state.json 中 books.{name}.phase 控制
+#   - 标记文件 (.phase1_done / .phase2_done / .phase3_done) 作为兜底兼容
 #   - 每个 Phase 默认 1h 超时, 单章默认 30min 超时
 #   - 超时后脚本自动退出, 入口层自动重启 (最多 PIPELINE_MAX_ATTEMPTS 次)
-#   - 重启时已完成的步骤自动跳过 (依赖 checkpoint 标记文件)
+#   - 重启时已完成的步骤自动跳过 (依赖 state JSON 的 phase 字段)
 #
 #  执行流 (step 模式):
 #   书A: Phase1(框架) → Phase2(写书) → Phase3(审稿)
@@ -18,6 +19,12 @@
 #  用法:
 #    bash scripts/run_pipeline.sh dryrun           # 甄嬛传 ×3章 Phase1→2→3
 #    bash scripts/run_pipeline.sh step             # 全部 active_books Phase1→2→3
+#
+#  手动控制版本（修改 workspace/iteration-state.json）:
+#   - 改 books.{书名}.version = "v3" → 从 v3 开始
+#   - 改 books.{书名}.phase   = "pending" → 强制重跑 Phase 1
+#   - 改 books.{书名}.phase   = "phase2_done" → 跳过 Phase 1/2，仅审稿
+#   - phase 值: pending | phase1_done | phase2_done | phase3_done | done
 #
 #  环境变量:
 #    PIPELINE_TIMEOUT       单阶段超时(秒), 默认3600(1h), 0=不限
@@ -47,7 +54,6 @@ warn()   { echo -e "${YELLOW}[$(date '+%H:%M:%S')] ⚠️  $1${NC}"; }
 fail()   { echo -e "${RED}[$(date '+%H:%M:%S')] ❌ $1${NC}"; }
 
 # ── 执行 opencode run，同步阻塞等待完成 ──
-# 返回值: 0=成功, 124=超时, 其他=失败
 run_phase() {
     local label="$1"
     shift
@@ -78,7 +84,6 @@ run_phase() {
 }
 
 # ── 执行章节生产（使用章节级超时） ──
-# 返回值: 同 run_phase (0=成功, 124=超时, 其他=失败)
 run_chapter() {
     local label="$1"
     local chapter_timeout="${2:-$CHAPTER_TIMEOUT}"
@@ -110,7 +115,7 @@ run_chapter() {
     fi
 }
 
-# ── 轮询等待标记文件 ──
+# ── 轮询等待标记文件（兜底兼容） ──
 wait_for_marker() {
     local marker="$1"
     local label="$2"
@@ -133,64 +138,250 @@ wait_for_marker() {
     success "标记已生成: $label"
 }
 
-# ── 获取版本目录中的最新版本号 ──
+# ═══════════════════════════════════════════════════════
+#  V3: iteration-state.json 驱动的状态管理
+# ═══════════════════════════════════════════════════════
+
+STATE_FILE="$ROOT_DIR/workspace/iteration-state.json"
+
+# ── 从 iteration-state.json 读取某本书的 version ──
+# 用法: get_book_version <书名> [fallback_dir]
+# Primary: state JSON books.{name}.version
+# Fallback: 扫描文件系统 versions/ 目录取最大号
 get_book_version() {
-    local book_dir="$1"
-    local ver="v1"
-    local versions_dir="$book_dir/versions"
+    local book_name="$1"
+    local fallback_dir="${2:-$ROOT_DIR/workspace/books/$book_name}"
+
+    if [ -f "$STATE_FILE" ]; then
+        local ver
+        ver=$(python3 -c "
+import json
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+print(s.get('books', {}).get('$book_name', {}).get('version', ''))
+" 2>/dev/null)
+        if [ -n "$ver" ]; then
+            echo "$ver"
+            return 0
+        fi
+    fi
+
+    local versions_dir="$fallback_dir/versions"
     if [ -d "$versions_dir" ]; then
         local max_ver
         max_ver=$(ls -1 "$versions_dir" 2>/dev/null | grep -E '^v[0-9]+$' | sed 's/v//' | sort -n | tail -1)
         if [ -n "$max_ver" ]; then
             echo "v$max_ver"
-            return
+            return 0
         fi
     fi
-    if [ -f "$book_dir/.phase1_done" ]; then
-        python3 -c "import json; d=json.load(open('$book_dir/.phase1_done')); print(d.get('version','$ver'))" 2>/dev/null || echo "$ver"
+    echo "v1"
+}
+
+# ── 从 iteration-state.json 读取某本书的 phase ──
+# 用法: get_book_phase <书名> [fallback_dir]
+# Primary: state JSON books.{name}.phase（key 存在时以 JSON 为准）
+# Fallback: key 不存在时，检查标记文件（旧数据兜底）
+get_book_phase() {
+    local book_name="$1"
+    local fallback_dir="${2:-$ROOT_DIR/workspace/books/$book_name}"
+
+    if [ -f "$STATE_FILE" ]; then
+        local phase
+        phase=$(python3 -c "
+import json
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+# phase key 存在时直接用 JSON 值（包括 pending）
+p = s.get('books', {}).get('$book_name', {}).get('phase')
+if p is not None:
+    print(p)
+" 2>/dev/null)
+        if [ -n "$phase" ]; then
+            echo "$phase"
+            return 0
+        fi
+    fi
+
+    # Fallback: phase 字段不存在 → 通过版本级标记文件推断
+    local ver
+    ver=$(get_book_version "$book_name" "$fallback_dir")
+    if [ -f "$fallback_dir/versions/$ver/.phase3_done" ]; then
+        echo "phase3_done"
+    elif [ -f "$fallback_dir/versions/$ver/.phase2_done" ]; then
+        echo "phase2_done"
+    elif [ -f "$fallback_dir/versions/$ver/.phase1_done" ]; then
+        echo "phase1_done"
     else
-        echo "$ver"
+        echo "pending"
     fi
 }
 
-# ── 为单本书创建临时 state 文件并触发 Phase 1 ──
+# ── 更新 iteration-state.json 中某本书的 phase ──
+update_book_phase() {
+    local book_name="$1"
+    local new_phase="$2"
+
+    python3 -c "
+import json
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+if '$book_name' in s.get('books', {}):
+    s['books']['$book_name']['phase'] = '$new_phase'
+else:
+    s.setdefault('books', {})['$book_name'] = {'phase': '$new_phase'}
+with open('$STATE_FILE', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
+success = True
+" 2>/dev/null && return 0 || return 1
+}
+
+# ── 更新 iteration-state.json 中某本书的 score / passed ──
+update_book_score() {
+    local book_name="$1"
+    local score="$2"
+    local passed="$3"
+
+    python3 -c "
+import json
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+if '$book_name' in s.get('books', {}):
+    s['books']['$book_name']['score'] = $score
+    s['books']['$book_name']['passed'] = $passed
+with open('$STATE_FILE', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
+" 2>/dev/null && return 0 || return 1
+}
+
+# ── 判断 phase 是否已达到或超过某个里程碑 ──
+# phase 阶序: pending < phase1_done < phase2_done < phase3_done < done
+phase_ge() {
+    local current="$1"
+    local required="$2"
+
+    case "$required" in
+        pending)     return 0 ;;
+        phase1_done) [ "$current" = "phase1_done" ] || [ "$current" = "phase2_done" ] || [ "$current" = "phase3_done" ] || [ "$current" = "done" ] && return 0 || return 1 ;;
+        phase2_done) [ "$current" = "phase2_done" ] || [ "$current" = "phase3_done" ] || [ "$current" = "done" ] && return 0 || return 1 ;;
+        phase3_done) [ "$current" = "phase3_done" ] || [ "$current" = "done" ] && return 0 || return 1 ;;
+        done)        [ "$current" = "done" ] && return 0 || return 1 ;;
+        *)           return 1 ;;
+    esac
+}
+
+# ── 为单本书触发 Phase 1 ──
+# V4 改进: 通过 scope 文件物理隔离，agent 只看到当前一本书
+# scope 文件 = workspace/.pipeline_scope.json（临时，仅含当前书）
+# 主 state = workspace/iteration-state.json（持久化，断点续跑用）
+# agent 完成后，从 scope 同步 phase/version 到主 state
 run_phase1_for_book() {
     local name="$1"
     local platform="$2"
     local track="$3"
     local chapters="$4"
+    local scope_file="$ROOT_DIR/workspace/.pipeline_scope.json"
 
-    local state_file="$ROOT_DIR/workspace/iteration-state.json"
-    local state_backup="$ROOT_DIR/workspace/.iteration-state.json.bak"
-
-    if [ ! -f "$state_file" ]; then
-        fail "状态文件不存在: $state_file"
+    if [ ! -f "$STATE_FILE" ]; then
+        fail "状态文件不存在: $STATE_FILE"
         return 1
     fi
 
-    cp "$state_file" "$state_backup"
-
+    # 从主 state 构建 scope 文件：只包含当前书，其他书物理不可见
     python3 -c "
 import json
-with open('$state_file') as f:
+with open('$STATE_FILE') as f:
     s = json.load(f)
-s['active_books'] = [{'name': '$name', 'platform': '$platform', 'track': '$track'}]
-s['target_chapters'] = $chapters
-s['phase'] = 'phase1'
-with open('$state_file', 'w') as f:
+book = s.get('books', {}).get('$name', {})
+scope = {
+    'mode': 'step',
+    'phase': 'phase1',
+    'current_round': s.get('current_round', 1),
+    'passing_score': s.get('passing_score', 10),
+    'target_chapters': $chapters,
+    'active_books': [{'name': '$name', 'platform': '$platform', 'track': '$track'}],
+    'books': {
+        '$name': book if book else {'version': 'v1', 'phase': 'pending'}
+    }
+}
+with open('$scope_file', 'w') as f:
+    json.dump(scope, f, ensure_ascii=False, indent=2)
+"
+    log "Phase 1 scope 已创建: 仅含 $name"
+
+    # 保存 scope 副本（agent 可能会删除 scope 文件）
+    local scope_backup="${scope_file}.copy"
+    cp "$scope_file" "$scope_backup"
+
+    cp "$STATE_FILE" "${STATE_FILE}.bak"
+    cp "$scope_file" "$STATE_FILE"
+
+    run_phase "Phase 1 - $name" "/iterate step"
+    local agent_rc=$?
+
+    # ── 无论成功失败，先恢复 state 文件（防止 swap 残留） ──
+    cp "${STATE_FILE}.bak" "$STATE_FILE"
+    rm -f "${STATE_FILE}.bak"
+
+    # ── 超时：向上传播 124，触发流水线重启 ──
+    if [ $agent_rc -eq 124 ]; then
+        fail "$name Phase 1 agent 执行超时"
+        rm -f "$scope_backup" "$scope_file"
+        return 124
+    fi
+
+    if [ $agent_rc -ne 0 ]; then
+        fail "$name Phase 1 agent 执行失败"
+        rm -f "$scope_backup" "$scope_file"
+        return 1
+    fi
+
+    # 从 scope 原文件读取 agent 写入的当前书 phase
+    # 原文件已被 agent 在 Phase 1 执行期间更新（phase=pending → phase1_done）
+    if [ ! -f "$scope_file" ]; then
+        fail "$name Phase 1 scope 文件丢失，无法同步 phase"
+        return 1
+    fi
+    local final_phase
+    final_phase=$(python3 -c "
+import json
+with open('$scope_file') as f:
+    s = json.load(f)
+print(s.get('books', {}).get('$name', {}).get('phase', 'pending'))
+" 2>/dev/null)
+
+    if [ -z "$final_phase" ]; then
+        fail "Phase 1 完成但无法读取 $name 的 phase（scope 文件可能损坏）"
+        rm -f "$scope_file"
+        return 1
+    fi
+
+    if ! phase_ge "$final_phase" "phase1_done"; then
+        fail "Phase 1 完成但 phase 未更新: $final_phase（agent 可能未处理 $name，请检查 agent 输出日志）"
+        rm -f "$scope_backup" "$scope_file"
+        return 1
+    fi
+
+    # 将 scope 原文件中的 phase/version 同步回主 state（只更新当前书，不动其他书）
+    python3 -c "
+import json
+with open('$scope_file') as f:
+    scope = json.load(f)
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+scope_book = scope.get('books', {}).get('$name', {})
+if '$name' not in s.setdefault('books', {}):
+    s['books']['$name'] = {}
+s['books']['$name']['phase'] = scope_book.get('phase', '$final_phase')
+if scope_book.get('version'):
+    s['books']['$name']['version'] = scope_book['version']
+with open('$STATE_FILE', 'w') as f:
     json.dump(s, f, ensure_ascii=False, indent=2)
 "
-    log "Phase 1 临时 state 已创建: 仅含 $name"
 
-    trap "cp '$state_backup' '$state_file' 2>/dev/null; rm -f '$state_backup'" EXIT
+    rm -f "$scope_backup" "$scope_file"
 
-    run_phase "Phase 1 - $name" "/iterate step" || { cp "$state_backup" "$state_file"; rm -f "$state_backup"; trap - EXIT; return 1; }
-
-    cp "$state_backup" "$state_file"
-    rm -f "$state_backup"
-    trap - EXIT
-
-    wait_for_marker "$ROOT_DIR/workspace/books/$name/.phase1_done" "$name.phase1_done" || return 1
+    success "Phase 1 验证通过: $name phase=$final_phase"
 }
 
 # ── 运行一本书的完整 Pipeline (Phase 1→2→3) ──
@@ -207,27 +398,33 @@ run_book_pipeline() {
     echo "│  处理: $name  ($platform / $track)            │"
     echo "└──────────────────────────────────────────────┘"
 
+    local phase
+    phase=$(get_book_phase "$name" "$book_dir")
+
     # ── Phase 1: 框架生成 ──
-    if [ -f "$book_dir/.phase1_done" ]; then
-        warn "跳过 Phase 1: $name（已有 .phase1_done）"
+    if phase_ge "$phase" "phase1_done"; then
+        warn "跳过 Phase 1: $name（phase=$phase）"
     else
         log "═══ Phase 1: 框架生成 ═══"
         run_phase1_for_book "$name" "$platform" "$track" "$chapters" || {
             fail "$name Phase 1 失败"
             return 1
         }
+        phase=$(get_book_phase "$name" "$book_dir")
     fi
 
     # ── Phase 2: 写书 ──
-    if [ -f "$book_dir/.phase2_done" ]; then
-        warn "跳过 Phase 2: $name（已有 .phase2_done）"
+    if phase_ge "$phase" "phase2_done"; then
+        warn "跳过 Phase 2: $name（phase=$phase）"
     else
         if [ ! -d "$book_dir/.opencode/agents" ]; then
             fail "项目 agent 目录不存在: $book_dir/.opencode/agents — Phase 1 可能未正确复制"
             return 1
         fi
 
-        log "═══ Phase 2: 写书 ($chapters 章) ═══"
+        local ver
+        ver=$(get_book_version "$name" "$book_dir")
+        log "═══ Phase 2: 写书 ($chapters 章, $ver) ═══"
 
         # Phase 2.0: 初始化 + 卷纲（独立 session）
         run_phase "Phase 2.0 - $name" \
@@ -237,9 +434,15 @@ run_book_pipeline() {
             fail "$name Phase 2.0 初始化/卷纲失败"
             return 1
         }
+        # 校验：agent 返回成功但卷纲文件可能未产出
+        local vol_outline="$book_dir/versions/$ver/01-大纲/01-卷纲/卷纲-第1卷.md"
+        if [ ! -f "$vol_outline" ]; then
+            fail "$name Phase 2.0 agent 返回成功但卷纲文件不存在: $vol_outline"
+            return 1
+        fi
+        success "$name Phase 2.0 卷纲已生成"
 
         # Phase 2.1+: 每章独立 session（断点续跑）
-        ver=$(get_book_version "$book_dir")
         for ((ch=1; ch<=chapters; ch++)); do
             if [ -f "$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md" ]; then
                 warn "跳过第${ch}章（终稿已存在，断点续跑）"
@@ -257,35 +460,54 @@ run_book_pipeline() {
                 fail "$name 第${ch}章 失败"
                 return 1
             fi
+            local ch_final="$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md"
+            if [ ! -f "$ch_final" ]; then
+                fail "$name 第${ch}章 agent 返回成功但终稿不存在: $ch_final"
+                return 1
+            fi
+            success "$name 第${ch}章 终稿已生成"
         done
 
-        # 写完成标记
+        # 写完成标记（标记文件 + state JSON 双写）
         python3 -c "
 import json, datetime
+now = datetime.datetime.now().isoformat()
+# 标记文件（版本级，兜底兼容）
 marker = {
     'phase': 'phase2_done',
     'chapters_completed': $chapters,
-    'timestamp': datetime.datetime.now().isoformat()
+    'timestamp': now
 }
-with open('$book_dir/.phase2_done', 'w') as f:
+with open('$book_dir/versions/$ver/.phase2_done', 'w') as f:
     json.dump(marker, f, ensure_ascii=False, indent=2)
+# state JSON（主数据源）
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+if '$name' in s.get('books', {}):
+    s['books']['$name']['phase'] = 'phase2_done'
+with open('$STATE_FILE', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
 "
+        update_book_phase "$name" "phase2_done"
         success "$name Phase 2 完成"
-        wait_for_marker "$book_dir/.phase2_done" "$name.phase2_done" || return 1
+        phase="phase2_done"
     fi
 
     # ── Phase 3: 审稿 ──
-    local ver
-    ver=$(get_book_version "$book_dir")
-    local phase3_marker="$book_dir/versions/$ver/.phase3_done"
+    # 重新获取最新 phase（Phase 2 可能刚更新）
+    phase=$(get_book_phase "$name" "$book_dir")
 
-    if [ -f "$phase3_marker" ]; then
-        warn "跳过 Phase 3: $name（已有 .phase3_done）"
+    if phase_ge "$phase" "phase3_done"; then
+        warn "跳过 Phase 3: $name（phase=$phase）"
     else
         if [ ! -d "$reviewer_dir/.opencode/agents" ]; then
             fail "评价层 agent 目录不存在: $reviewer_dir/.opencode/agents"
             return 1
         fi
+
+        local ver
+        ver=$(get_book_version "$name" "$book_dir")
+        local phase3_marker="$book_dir/versions/$ver/.phase3_done"
 
         log "═══ Phase 3: 审稿 ($ver) ═══"
         run_phase "Phase 3 - $name" \
@@ -295,10 +517,27 @@ with open('$book_dir/.phase2_done', 'w') as f:
             fail "$name Phase 3 失败"
             return 1
         }
+        # 等待 agent 写入 .phase3_done 标记
         wait_for_marker "$phase3_marker" "$name.phase3_done" || return 1
+
+        # 从 .phase3_done 读取 score 并同步到 state JSON
+        python3 -c "
+import json
+with open('$phase3_marker') as f:
+    p3 = json.load(f)
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+if '$name' in s.get('books', {}):
+    s['books']['$name']['phase'] = 'phase3_done'
+    s['books']['$name']['score'] = p3.get('signing_score')
+    s['books']['$name']['passed'] = p3.get('signing_passed', False)
+with open('$STATE_FILE', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
+" 2>/dev/null
+        phase="phase3_done"
     fi
 
-    success "$name — 全流程完成"
+    success "$name — 全流程完成 (phase=$phase)"
     echo "$name"
 }
 
@@ -317,8 +556,10 @@ dryrun_inner() {
 
     # Phase 1: 框架生成 (dryrun 模式)
     log "═══ Phase 1: 框架生成 ═══"
+    local dryrun_ver
+    dryrun_ver=$(get_book_version "$name" "$dryrun_book_dir")
     run_phase "Phase 1 dryrun" "/iterate dryrun" || return 1
-    wait_for_marker "$dryrun_book_dir/.phase1_done" "$name.phase1_done" || return 1
+    wait_for_marker "$dryrun_book_dir/versions/$dryrun_ver/.phase1_done" "$name.phase1_done" || return 1
 
     # Phase 2: 写书
     log "═══ Phase 2: 写书 (3章) ═══"
@@ -332,10 +573,13 @@ dryrun_inner() {
         --dir "$dryrun_book_dir" \
         --agent chief_editor \
         "初始化项目并生成第1卷卷纲" || return 1
+    local dryrun_vol="$dryrun_book_dir/versions/$dryrun_ver/01-大纲/01-卷纲/卷纲-第1卷.md"
+    if [ ! -f "$dryrun_vol" ]; then
+        fail "dryrun Phase 2.0 agent 返回成功但卷纲文件不存在: $dryrun_vol"
+        return 1
+    fi
 
     # Phase 2.1-2.3: 每章独立 session（断点续跑）
-    local dryrun_ver
-    dryrun_ver=$(get_book_version "$dryrun_book_dir")
     for ch in 1 2 3; do
         if [ -f "$dryrun_book_dir/versions/$dryrun_ver/02-正文/第${ch}章-终稿.md" ]; then
             warn "跳过第${ch}章（终稿已存在，断点续跑）"
@@ -353,9 +597,13 @@ dryrun_inner() {
             fail "dryrun 第${ch}章 失败"
             return 1
         fi
+        local dryrun_ch="$dryrun_book_dir/versions/$dryrun_ver/02-正文/第${ch}章-终稿.md"
+        if [ ! -f "$dryrun_ch" ]; then
+            fail "dryrun 第${ch}章 agent 返回成功但终稿不存在: $dryrun_ch"
+            return 1
+        fi
     done
 
-    # 写完成标记
     python3 -c "
 import json, datetime
 marker = {
@@ -363,7 +611,7 @@ marker = {
     'chapters_completed': 3,
     'timestamp': datetime.datetime.now().isoformat()
 }
-with open('$dryrun_book_dir/.phase2_done', 'w') as f:
+with open('$dryrun_book_dir/versions/$dryrun_ver/.phase2_done', 'w') as f:
     json.dump(marker, f, ensure_ascii=False, indent=2)
 "
     success "$name Phase 2 完成"
@@ -371,7 +619,7 @@ with open('$dryrun_book_dir/.phase2_done', 'w') as f:
     # Phase 3: 审稿
     log "═══ Phase 3: 审稿 ═══"
     local dryrun_version
-    dryrun_version=$(get_book_version "$dryrun_book_dir")
+    dryrun_version=$(get_book_version "$name" "$dryrun_book_dir")
     run_phase "Phase 3 dryrun" \
         --dir "$reviewer_dir" \
         --agent reviewer_orchestrator \
@@ -388,10 +636,8 @@ with open('$dryrun_book_dir/.phase2_done', 'w') as f:
 #  STEP 模式：每本书独立跑 Phase 1→2→3
 # ═══════════════════════════════════════════════════════
 step_inner() {
-    local state_file="$ROOT_DIR/workspace/iteration-state.json"
-
-    if [ ! -f "$state_file" ]; then
-        fail "状态文件不存在: $state_file"
+    if [ ! -f "$STATE_FILE" ]; then
+        fail "状态文件不存在: $STATE_FILE"
         return 1
     fi
 
@@ -399,7 +645,7 @@ step_inner() {
     local books_data
     books_data=$(python3 -c "
 import json
-with open('$state_file') as f:
+with open('$STATE_FILE') as f:
     s = json.load(f)
 chapters = s.get('target_chapters', 5)
 books = s.get('active_books', [])
@@ -407,7 +653,7 @@ for b in books:
     print(f'{b[\"name\"]}|{b.get(\"platform\",\"\")}|{b.get(\"track\",\"\")}')
 " 2>/dev/null)
     local chapters
-    chapters=$(python3 -c "import json; s=json.load(open('$state_file')); print(s.get('target_chapters',5))")
+    chapters=$(python3 -c "import json; s=json.load(open('$STATE_FILE')); print(s.get('target_chapters',5))")
 
     local book_count
     book_count=$(echo "$books_data" | grep -c '|')
@@ -418,13 +664,19 @@ for b in books:
     echo "============================================"
     echo "  step — $book_count 本书 × $chapters 章"
     echo "  每本书独立执行 Phase 1→2→3"
+    echo "  状态管理: iteration-state.json"
     echo "============================================"
     echo ""
 
     while IFS='|' read -r name platform track; do
         [ -z "$name" ] && continue
         current=$((current + 1))
-        log ">>> 第 $current/$book_count 本: $name <<<"
+
+        local phase
+        phase=$(get_book_phase "$name")
+        local ver
+        ver=$(get_book_version "$name")
+        log ">>> 第 $current/$book_count 本: $name (phase=$phase, version=$ver) <<<"
 
         local result
         result=$(run_book_pipeline "$name" "$platform" "$track" "$chapters")
@@ -447,7 +699,7 @@ for b in books:
         local first_book
         first_book=$(echo "$completed_books" | awk '{print $1}')
         local cross_ver
-        cross_ver=$(get_book_version "$ROOT_DIR/workspace/books/$first_book")
+        cross_ver=$(get_book_version "$first_book")
         echo ""
         log "═══ 跨书总结 ═══"
         run_phase "跨书总结" \
@@ -479,7 +731,6 @@ cd "$ROOT_DIR" || exit 1
 
 ATTEMPT_FILE="$ROOT_DIR/workspace/.pipeline_attempt"
 
-# 获取当前是第几次尝试 (1-indexed)
 current_attempt=0
 if [ -f "$ATTEMPT_FILE" ]; then
     current_attempt=$(cat "$ATTEMPT_FILE" 2>/dev/null || echo 0)
@@ -507,15 +758,23 @@ while [ $current_attempt -lt $PIPELINE_MAX_ATTEMPTS ]; do
             echo "  ..."
             echo "  跨书总结"
             echo ""
+            echo "V3 状态管理 (workspace/iteration-state.json):"
+            echo "  ═══ Phase 阶段控制 ═══"
+            echo "  books.{书名}.phase  : pending | phase1_done | phase2_done | phase3_done | done"
+            echo "  books.{书名}.version: v1 | v2 | v3 | ...  (目标版本号)"
+            echo "  books.{书名}.score  : 签约审稿分数 (Phase 3 后自动填充)"
+            echo "  books.{书名}.passed : true/false (Phase 3 后自动填充)"
+            echo ""
+            echo "  ═══ 使用场景 ═══"
+            echo "  断点续跑          : 不做任何修改，脚本自动跳过已完成阶段"
+            echo "  重头从 v3 跑      : 改 version → v3, phase → pending"
+            echo "  仅重跑 Phase 2/3  : 改 phase → phase1_done"
+            echo "  仅重跑 Phase 3    : 改 phase → phase2_done"
+            echo ""
             echo "环境变量:"
             echo "  PIPELINE_TIMEOUT       单阶段超时秒数 (默认 3600=1h, 0=不限)"
             echo "  CHAPTER_TIMEOUT        单章超时秒数 (默认 1800=30min, 0=不限)"
             echo "  PIPELINE_MAX_ATTEMPTS  流水线最大重启次数 (默认 3)"
-            echo ""
-            echo "超时后自动重启机制:"
-            echo "  单章超时 → 脚本退出 → 自动重启 (最多 PIPELINE_MAX_ATTEMPTS 次)"
-            echo "  重启时已完成的步骤自动跳过 (依赖 checkpoint 标记文件)"
-            echo "  全部尝试耗尽 → 终止, 等待人工排查"
             rm -f "$ATTEMPT_FILE"
             exit 1
             ;;

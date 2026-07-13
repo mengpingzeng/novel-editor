@@ -1,0 +1,14 @@
+{
+  "stages": {
+    "plot_planner": {
+      "input_files": [],
+      "records": [
+        {
+          "timestamp": "2026-07-10T13:10:38.327856",
+          "chapter": 4,
+          "total_bytes": 0
+        }
+      ]
+    }
+  }
+}
