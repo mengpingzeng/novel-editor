@@ -10,6 +10,8 @@ permission:
   glob: allow
   grep: allow
   bash: allow
+  skill:
+    "*": allow
   task:
     "*": allow
 ---
@@ -47,7 +49,21 @@ permission:
    ├── 发布/
    └── 04-数据/
    ```
-5. 创建 `自动化处理日志.md`：
+5. 初始化伏笔状态滚动摘要（若不存在）：
+   ```bash
+   SUMMARY="versions/{version}/04-数据/伏笔状态滚动摘要.md"
+   if [ ! -f "$SUMMARY" ]; then
+     echo '# 伏笔状态滚动摘要
+> 此文件由 chief_editor 自动维护。每章生成后追加/更新伏笔状态。
+> content_writer 和 plot_planner 必须读取此文件以获取跨章伏笔上下文。
+
+| 伏笔ID | 级别 | 埋设章 | 状态 | 预期回收章 | 最后推进章 | 备注 |
+|--------|:---:|:-----:|------|:--------:|:--------:|------|
+| *(首章生成后填入)* | | | | | | |
+' > "$SUMMARY"
+   fi
+   ```
+6. 创建 `自动化处理日志.md`：
    ```
    # 自动化处理日志 - {version}
 
@@ -157,7 +173,7 @@ permission:
    - `versions/{version}/仿写衍生总纲领.md`
    - 卷号
    - `versions/{version}/project_salt.json` 路径
-   - （若步骤1.5加载了注入包）传入注入包中关键字段作为附加约束（角色状态/阶段划分/事件骨架/伏笔清单/爽点预算/不可触碰内容）
+    - （若步骤1.5加载了注入包）传入注入包中关键字段作为附加约束（角色状态/阶段划分/事件骨架/伏笔清单/爽点预算/不可触碰内容/禁止模式）
    - 输出：`versions/{version}/01-大纲/01-卷纲/卷纲-第X卷.md`
    - 日志标记"✅"
 
@@ -170,9 +186,17 @@ permission:
 ### 3a. 章纲生成
 
 1. 追加日志：`| {now} | 第{N}章章纲 | plot_planner | team-deepseek/deepseek-v4-flash | 进行中 |`
-2. 记录 plot_planner 输入大小：
+2. 记录 plot_planner 输入大小（v4：滑动窗口模式，仅统计最近 3 章纪要 + 伏笔摘要）：
    ```bash
-   total=$(cat "versions/{version}/仿写衍生总纲领.md" "versions/{version}/03-纪要/"*.md 2>/dev/null | wc -c)
+   summary_size=$(wc -c < "versions/{version}/04-数据/伏笔状态滚动摘要.md" 2>/dev/null || echo 0)
+   # 统计最近 3 章纪要（若不存在则跳过）
+   recent_mins=0
+   for i in $(seq $((N > 3 ? N-3 : 1)) $((N-1))); do
+     f="versions/{version}/03-纪要/第${i}章纪要.md"
+     [ -f "$f" ] && recent_mins=$(($recent_mins + $(wc -c < "$f")))
+   done
+   total=$(cat "versions/{version}/仿写衍生总纲领.md" /dev/null 2>/dev/null | wc -c)
+   total=$((total + summary_size + recent_mins))
    python scripts/novel_metadata.py record-input --path "versions/{version}/input_monitor.json" --stage "plot_planner" --chapter {N} --bytes $total
    ```
 3. 调用 @plot_planner（章纲模式）：
@@ -185,8 +209,27 @@ permission:
 ### 3b. 正文初稿（mode=fresh）
 
 1. 追加日志：`| {now} | 第{N}章初稿(v1) | content_writer | team-deepseek/deepseek-v4-flash | 进行中 |`
-2. 记录 content_writer 输入大小（同上方式）
-3. 调用 @content_writer mode=fresh → `versions/{version}/02-正文/第{N}章-初稿-v1.md`，日志标记"✅({字数}字)"
+2. 记录 content_writer 输入大小（v4：滑动窗口模式，仅最近 2 章纪要 + 伏笔摘要 + 前章终稿）：
+   ```bash
+   summary_size=$(wc -c < "versions/{version}/04-数据/伏笔状态滚动摘要.md" 2>/dev/null || echo 0)
+   prev_chapter=$((N-1))
+   prev_text_size=0; [ -f "versions/{version}/02-正文/第${prev_chapter}章-终稿.md" ] && prev_text_size=$(wc -c < "versions/{version}/02-正文/第${prev_chapter}章-终稿.md")
+   recent_mins=0
+   for i in $(seq $((N > 2 ? N-2 : 1)) $((N-1))); do
+     f="versions/{version}/03-纪要/第${i}章纪要.md"
+     [ -f "$f" ] && recent_mins=$(($recent_mins + $(wc -c < "$f")))
+   done
+   outline_size=$(wc -c < "versions/{version}/01-大纲/第{N}章章纲.md")
+   total=$((outline_size + summary_size + prev_text_size + recent_mins))
+   python scripts/novel_metadata.py record-input --path "versions/{version}/input_monitor.json" --stage "content_writer" --chapter {N} --bytes $total
+   ```
+3. 调用 @content_writer mode=fresh：
+   - 传入 `versions/{version}/01-大纲/第{N}章章纲.md`
+   - 传入 `versions/{version}/04-数据/伏笔状态滚动摘要.md`（**v4 新增·必传**）
+   - 传入 `versions/{version}/03-纪要/` 下最近 2 章的纪要文件（**不超过 2 章**）
+   - 传入 `versions/{version}/02-正文/第{N-1}章-终稿.md`（前章终稿，用于衔接）
+   - 输出：`versions/{version}/02-正文/第{N}章-初稿-v1.md`
+   - 日志标记"✅({字数}字)"
 
 ### 3c. 质检 + 重写循环（最多 3 轮）
 
@@ -226,6 +269,74 @@ python scripts/novel_metadata.py add-chapter --path "versions/{version}/发布/n
 
 质检报告已由 quality_reviewer 写入 `versions/{version}/03-纪要/第{N}章纪要.md`。
 
+### 3e5. 伏笔状态滚动摘要更新（v4 新增·强制执行）
+
+每章终稿确认后，从本章章纲中提取伏笔操作，更新滚动摘要文件：
+
+```bash
+SUMMARY="versions/{version}/04-数据/伏笔状态滚动摘要.md"
+CHAPTER_OUTLINE="versions/{version}/01-大纲/第{N}章章纲.md"
+
+# 1. 从章纲的伏笔登记表中提取本章的伏笔操作（埋设/推进/回收）
+#    查找章纲中的伏笔引用登记表（§5或§4.A格式）
+#    格式示例：| FS-B1 | B | 反魂针 | 推进（确认） | Ch5 |
+
+# 2. 对每个伏笔 ID，在滚动摘要中更新对应行
+#    - 若为新埋设伏笔（摘要中不存在）→ 追加新行
+#    - 若为已有伏笔推进/回收 → 更新"状态"和"最后推进章"列
+#    使用 Python 脚本完成解析和更新：
+python3 -c "
+import re, sys
+summary_file = '$SUMMARY'
+outline_file = '$CHAPTER_OUTLINE'
+chapter_num = {N}
+
+# 读取章纲，查找伏笔登记表（格式：| 伏笔ID | 级别 | 内容摘要 | 本章操作 | ...）
+with open(outline_file) as f:
+    ol = f.read()
+
+# 匹配伏笔表中的行（排除表头和分隔行）
+foreshadow_pattern = re.compile(r'^\|\s*(FS-[A-Z]\d+|LOCAL-\d+)\s*\|\s*([ABC])\s*\|.*?\|\s*(\S+?)\s*\|', re.MULTILINE)
+ops = []
+for m in foreshadow_pattern.finditer(ol):
+    fid, level, op = m.group(1), m.group(2), m.group(3)
+    ops.append((fid, level, op))
+
+# 读取现有摘要
+with open(summary_file) as f:
+    summary = f.read()
+
+# 更新每一行
+for fid, level, op in ops:
+    status_map = {
+        '埋设': '已埋设',
+        '推进': '已推进',
+        '回收': '已回收',
+        '确认': '已确认',
+    }
+    status = status_map.get(op, '已推进')
+    
+    if fid in summary:
+        # 更新已有行：替换状态和最后推进章
+        summary = re.sub(
+            rf'\| {re.escape(fid)} \|.*\|',
+            f'| {fid} | {level} | (保持埋设章) | {status} | (保持) | Ch{chapter_num} |',
+            summary
+        )
+    else:
+        # 追加新行
+        new_row = f'| {fid} | {level} | Ch{chapter_num} | {status} | (待定) | Ch{chapter_num} | |\n'
+        # 在表头后插入
+        summary = summary.replace('|--------|:---:|:-----:|------|:--------:|:--------:|------|\n',
+                               f'|--------|:---:|:-----:|------|:--------:|:--------:|------|\n{new_row}')
+
+with open(summary_file, 'w') as f:
+    f.write(summary)
+
+print(f'✅ 伏笔摘要已更新: {len(ops)} 条操作 (Ch{chapter_num})')
+"
+```
+
 ### 3f. 输出校验（每次子 agent 调用后强制执行）
 
 **铁则**：每调用完一个子 agent（@plot_planner / @content_writer / @quality_reviewer），必须立即用 bash 验证其宣称的输出文件是否真实存在。
@@ -247,6 +358,19 @@ fi
 | 3c.i @content_writer(rewrite) | `02-正文/第{N}章-初稿-v{retry+1}.md` | 日志记录 `❌重写稿缺失`，直接退出重写循环，取已有 best_version |
 
 **关键原则**：绝不写"假的终稿"。子 agent 没产出 = 终稿不存在 = 脚本下次重启会重试本章。
+
+### 3g. 数据复盘（每 10 章触发一次）
+
+> ★ 当 N 为 10 的倍数时（第 10/20/30...章完成后），在进入下一章之前执行本节。
+
+1. 追加日志：`| {now} | 第{M}-{N}章复盘 | data-operator skill | — | 进行中 |`
+2. 加载 `data-operator` skill
+3. 按 skill 中的复盘流程执行：
+   - 读取 `versions/{version}/04-数据/` 下的流量数据
+   - 读取 `versions/{version}/03-纪要/` 第 M-N 章的纪要
+   - 生成复盘报告：`versions/{version}/04-数据/第M-N章复盘报告.md`
+4. 根据复盘报告中的调整指令，更新 `versions/{version}/仿写衍生总纲领.md` 中相关章节（节奏模型/爽点体系/角色系统）
+5. 日志标记：`| {now} | 第{M}-{N}章复盘 | data-operator skill | — | ✅(总纲已更新) |`
 
 ### 3a5. L2 替换合规性校验（新增·DIFF_WARNING 章强制执行）
 

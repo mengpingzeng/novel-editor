@@ -10,6 +10,8 @@ permission:
   glob: allow
   grep: allow
   bash: allow
+  skill:
+    "*": allow
   task:
     "*": allow
 ---
@@ -24,7 +26,7 @@ permission:
 
 ```
 对每本书逐本执行：
-  original_analyst → compliance → style_mapper → facade_generator → salt_architect → master_outline_generator
+  original_analyst → [compliance-rule-query skill] → style_mapper → facade_generator → salt_architect → master_outline_generator
   → 复制 project agents → 写入 .phase1_done
   → 下一本
 
@@ -89,9 +91,9 @@ dryrun 模式：`workspace/_dryrun/iteration-state.json`（自动创建，不污
       - 若 `workspace/repo/{source_name}/base_whitepaper.md` 已存在 → 跳过
       - 白皮书备份到 `workspace/books/{source_name}/versions/{version}/00-素材/base_whitepaper.md`
 
-   b. **平台规则**：调用 @compliance_{平台}（模式一：规则查询），获取平台规则集
-      - **将返回的规则 JSON 写入** `workspace/books/{source_name}/versions/{version}/00-素材/platform_rules.json`
-      - 若 00-素材/ 目录不存在，先用 bash `mkdir -p` 创建
+    b. **平台规则**：加载 `compliance-rule-query` skill，根据 `target_platform`（来自 state 文件）输出对应平台的完整规则集 JSON
+       - **将规则 JSON 写入** `workspace/books/{source_name}/versions/{version}/00-素材/platform_rules.json`
+       - 若 00-素材/ 目录不存在，先用 bash `mkdir -p` 创建
 
    c. **赛道映射**：调用 @style_mapper（或指定的 @style_{track}），输出 `00-素材/赛道映射.json`
 
