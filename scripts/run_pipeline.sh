@@ -17,8 +17,10 @@
 #   跨书总结
 #
 #  用法:
-#    bash scripts/run_pipeline.sh dryrun           # 甄嬛传 ×3章 Phase1→2→3
-#    bash scripts/run_pipeline.sh step             # 全部 active_books Phase1→2→3
+#    bash scripts/run_pipeline.sh dryrun                   # 甄嬛传 ×3章 Phase1→2→3
+#    bash scripts/run_pipeline.sh step                     # 全部 active_books Phase1→2→3
+#    bash scripts/run_pipeline.sh step --skip-phase3      # 跳过 Phase 3 审稿（线上生产模 式）
+#    bash scripts/run_pipeline.sh dryrun --skip-phase3    # dryrun 也支持
 #
 #  手动控制版本（修改 workspace/iteration-state.json）:
 #   - 改 books.{书名}.version = "v3" → 从 v3 开始
@@ -36,6 +38,12 @@ set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODE="${1:-dryrun}"
+SKIP_PHASE3="false"
+for arg in "$@"; do
+    case "$arg" in
+        --skip-phase3) SKIP_PHASE3="true" ;;
+    esac
+done
 TIMEOUT_PER_PHASE="${PIPELINE_TIMEOUT:-3600}"
 CHAPTER_TIMEOUT="${CHAPTER_TIMEOUT:-1800}"
 PIPELINE_MAX_ATTEMPTS="${PIPELINE_MAX_ATTEMPTS:-3}"
@@ -496,18 +504,43 @@ with open('$STATE_FILE', 'w') as f:
     # ── Phase 3: 审稿 ──
     # 重新获取最新 phase（Phase 2 可能刚更新）
     phase=$(get_book_phase "$name" "$book_dir")
+    local ver
+    ver=$(get_book_version "$name" "$book_dir")
+    local phase3_marker="$book_dir/versions/$ver/.phase3_done"
 
-    if phase_ge "$phase" "phase3_done"; then
+    if [ "$SKIP_PHASE3" = "true" ]; then
+        if phase_ge "$phase" "phase3_done"; then
+            warn "跳过 Phase 3: $name（已有评分结果, phase=$phase）"
+        else
+            warn "跳过 Phase 3: $name（--skip-phase3）"
+            # V4: 跳过评分时写入跳过标记，并将 phase 置为 phase3_done
+            python3 -c "
+import json, datetime
+marker = {
+    'phase': 'phase3_done',
+    'version': '$ver',
+    'timestamp': datetime.datetime.now().isoformat(),
+    'review_skipped': True
+}
+with open('$phase3_marker', 'w') as f:
+    json.dump(marker, f, ensure_ascii=False, indent=2)
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+if '$name' in s.get('books', {}):
+    s['books']['$name']['phase'] = 'phase3_done'
+    s['books']['$name']['review_skipped'] = True
+with open('$STATE_FILE', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
+"
+            phase="phase3_done"
+        fi
+    elif phase_ge "$phase" "phase3_done"; then
         warn "跳过 Phase 3: $name（phase=$phase）"
     else
         if [ ! -d "$reviewer_dir/.opencode/agents" ]; then
             fail "评价层 agent 目录不存在: $reviewer_dir/.opencode/agents"
             return 1
         fi
-
-        local ver
-        ver=$(get_book_version "$name" "$book_dir")
-        local phase3_marker="$book_dir/versions/$ver/.phase3_done"
 
         log "═══ Phase 3: 审稿 ($ver) ═══"
         run_phase "Phase 3 - $name" \
@@ -620,11 +653,28 @@ with open('$dryrun_book_dir/versions/$dryrun_ver/.phase2_done', 'w') as f:
     log "═══ Phase 3: 审稿 ═══"
     local dryrun_version
     dryrun_version=$(get_book_version "$name" "$dryrun_book_dir")
-    run_phase "Phase 3 dryrun" \
-        --dir "$reviewer_dir" \
-        --agent reviewer_orchestrator \
-        "审核 $dryrun_book_dir/versions/$dryrun_version/" || return 1
-    wait_for_marker "$dryrun_book_dir/versions/$dryrun_version/.phase3_done" "$name.phase3_done" || return 1
+    local dryrun_phase3_marker="$dryrun_book_dir/versions/$dryrun_version/.phase3_done"
+
+    if [ "$SKIP_PHASE3" = "true" ]; then
+        warn "跳过 Phase 3: $name（--skip-phase3）"
+        python3 -c "
+import json, datetime
+marker = {
+    'phase': 'phase3_done',
+    'version': '$dryrun_version',
+    'timestamp': datetime.datetime.now().isoformat(),
+    'review_skipped': True
+}
+with open('$dryrun_phase3_marker', 'w') as f:
+    json.dump(marker, f, ensure_ascii=False, indent=2)
+"
+    else
+        run_phase "Phase 3 dryrun" \
+            --dir "$reviewer_dir" \
+            --agent reviewer_orchestrator \
+            "审核 $dryrun_book_dir/versions/$dryrun_version/" || return 1
+        wait_for_marker "$dryrun_phase3_marker" "$name.phase3_done" || return 1
+    fi
 
     echo ""
     echo "============================================"
@@ -693,7 +743,9 @@ for b in books:
     done <<< "$books_data"
 
     # ── 跨书总结 ──
-    if [ -n "$completed_books" ]; then
+    if [ "$SKIP_PHASE3" = "true" ]; then
+        warn "跳过跨书总结（--skip-phase3）"
+    elif [ -n "$completed_books" ]; then
         local book_list
         book_list=$(echo "$completed_books" | sed 's/^ //; s/ /,/g')
         local first_book
@@ -747,10 +799,13 @@ while [ $current_attempt -lt $PIPELINE_MAX_ATTEMPTS ]; do
         dryrun) dryrun_inner ;;
         step)   step_inner ;;
         *)
-            echo "用法: bash scripts/run_pipeline.sh {dryrun|step}"
+            echo "用法: bash scripts/run_pipeline.sh {dryrun|step} [--skip-phase3]"
             echo ""
             echo "  dryrun    甄嬛传 × 3章 全流程自测"
             echo "  step      全部 active_books 全流程 (每本书独立 Phase 1→2→3)"
+            echo ""
+            echo "可选参数:"
+            echo "  --skip-phase3    跳过 Phase 3 审稿 + 跨书总结（线上生产模式，零评分开销）"
             echo ""
             echo "step 模式执行流:"
             echo "  书A: Phase1(框架) → Phase2(写书) → Phase3(审稿)"
@@ -764,12 +819,14 @@ while [ $current_attempt -lt $PIPELINE_MAX_ATTEMPTS ]; do
             echo "  books.{书名}.version: v1 | v2 | v3 | ...  (目标版本号)"
             echo "  books.{书名}.score  : 签约审稿分数 (Phase 3 后自动填充)"
             echo "  books.{书名}.passed : true/false (Phase 3 后自动填充)"
+            echo "  books.{书名}.review_skipped : true (--skip-phase3 时标记)"
             echo ""
             echo "  ═══ 使用场景 ═══"
             echo "  断点续跑          : 不做任何修改，脚本自动跳过已完成阶段"
             echo "  重头从 v3 跑      : 改 version → v3, phase → pending"
             echo "  仅重跑 Phase 2/3  : 改 phase → phase1_done"
             echo "  仅重跑 Phase 3    : 改 phase → phase2_done"
+            echo "  补审已跳过的书    : 改 phase → phase2_done，不带 --skip-phase3 重跑"
             echo ""
             echo "环境变量:"
             echo "  PIPELINE_TIMEOUT       单阶段超时秒数 (默认 3600=1h, 0=不限)"

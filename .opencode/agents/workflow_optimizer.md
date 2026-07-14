@@ -36,7 +36,7 @@ permission:
   └── 任务三：快速门面灵感（facade_generator 模式一）
 
 项目层（books/.../ 目录启动，对话 chief_editor）
-  └── 任务三：全自动写作（plot_planner → content_writer → quality_reviewer → compliance_* → data_operator）
+  └── 任务三：全自动写作（plot_planner → content_writer → compliance_* → quality_reviewer → data_operator）
 ```
 
 ### 1.2 Agent 速查表（含输入/输出/调用方/被调方）
@@ -48,7 +48,7 @@ permission:
 | `style_urban/xuanhuan/xianxia/romance/history/scifi/suspense` | 全局 ×7 | Subagent | global_manager | 白皮书路径+平台名 | 映射层JSON |
 | `facade_generator` | 全局 | Subagent | global_manager | 轻量参数(模式一)/完整映射(模式二) | 书名+简介JSON |
 | `salt_architect` | 全局 | Subagent | global_manager | 盐值初稿+历史盐值列表 | 校验结果JSON |
-| `compliance_tomato/qimao` | 全局 ×2 | Subagent | chief_editor | 平台名(模式一)/正文路径(模式二) | 规则集JSON/终审结果 |
+| `compliance_tomato/qimao` | 全局 ×2 | Subagent | chief_editor | chapter_path(章节终审) | 合规审查.md（写入03-纪要/） |
 | `chief_editor` | 项目 | Primary | 用户 | 用户指令 | 写作流水线结果 |
 | `plot_planner` | 项目 | Subagent | chief_editor | 总纲领+章号范围+卷位 | 章纲.md |
 | `content_writer` | 项目 | Subagent | chief_editor | 总纲领+章纲+纪要 | 初稿.md |
@@ -64,7 +64,7 @@ permission:
 | 节奏模型 | original_analyst → chief_editor | plot_planner, content_writer | 仿写衍生总纲领.md |
 | 文风句式 | original_analyst → chief_editor | content_writer, quality_reviewer | 仿写衍生总纲领.md |
 | 爽点公式 | original_analyst → chief_editor | plot_planner, content_writer, quality_reviewer | 仿写衍生总纲领.md |
-| 平台规则 | compliance_* → chief_editor | content_writer, quality_reviewer | 仿写衍生总纲领.md |
+| 平台规则 | compliance-rule-query skill → automation_manager | content_writer, quality_reviewer, compliance_* | 仿写衍生总纲领.md §2 + platform_rules.json |
 | 卷节奏模板 | style_* → project_salt.json → chief_editor | plot_planner | project_salt.json |
 | 防雷同三注入点 | style_*(①), content_writer(②), quality_reviewer(③) | 需协同修改，修改任一注入点需检查其余两个是否仍然对齐 |
 
@@ -94,7 +94,7 @@ permission:
 | "质检太严格/太宽松" / "评分不合理" | 质检环节 | quality_reviewer |
 | "正文质量差" / "文风不像" / "对话生硬" | 正文写作 | content_writer |
 | "章纲不合理" / "卷规划不对" | 剧情规划 | plot_planner |
-| "平台规则过时" / "合规检查不准" | 平台合规 | compliance_* |
+| "平台规则过时" / "合规检查不准" | 平台合规 | compliance-rule-query skill |
 | "复盘没用" / "数据没落地" | 数据运营 | data_operator |
 | "流程卡住" / "总纲领不对" / "初始化失败" | 调度层 | global_manager / chief_editor |
 | "仿写跟原著太像" | 防雷同体系 | style_* + content_writer + quality_reviewer |

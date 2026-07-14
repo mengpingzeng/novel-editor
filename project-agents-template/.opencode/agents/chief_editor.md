@@ -231,31 +231,45 @@ permission:
    - 输出：`versions/{version}/02-正文/第{N}章-初稿-v1.md`
    - 日志标记"✅({字数}字)"
 
-### 3c. 质检 + 重写循环（最多 3 轮）
+### 3c. 合规门禁 + 质检 + 重写循环（最多 3 轮）
 
 ```
-初始化：retry = 0, best_score = 0, best_version = null
+初始化：retry = 0, best_score = 0, best_version = null, prev_score = null
 
-LOOP:
+LOOP（本轮稿 = 第{N}章-初稿-v{retry+1}.md）：
+
+  0. **合规门禁（每次重写后必执行）**：
+     a. 读取 `versions/{version}/仿写衍生总纲领.md` §2 平台适配 → 确定 target_platform
+     b. 根据平台调用对应合规专员：
+        - target_platform="番茄小说" → @compliance_tomato(chapter_path=versions/{version}/02-正文/第{N}章-初稿-v{retry+1}.md)
+        - target_platform="七猫小说" → @compliance_qimao(chapter_path=versions/{version}/02-正文/第{N}章-初稿-v{retry+1}.md)
+     c. 合规专员写入 `versions/{version}/03-纪要/第{N}章合规审查-v{retry+1}.md`，返回一行摘要
+     d. 解析摘要中的合规结果，记录日志：
+        - 合规通过 → | {now} | 第{N}章合规(第{retry+1}轮) | compliance_{平台} | team-deepseek/deepseek-v4-flash | ✅(通过) |
+        - 合规不通过 → | {now} | 第{N}章合规(第{retry+1}轮) | compliance_{平台} | team-deepseek/deepseek-v4-flash | ❌(不通过：{摘要原文}) → 跳到步骤 h（跳过质检，直接进入 rewrite）
   a. 调用 @quality_reviewer → 读取 第{N}章-初稿-v{retry+1}.md → 输出 第{N}章纪要-v{retry+1}.md
   b. 解析分数 score
   c. 记录日志：
-     - score ≥ 60 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | team-deepseek/deepseek-v4-flash | ✅({score}分) — 通过 |
-     - score < 60 且 > 0 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | team-deepseek/deepseek-v4-flash | ⚠({score}分) — 未通过 |
-     - score == 0 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | team-deepseek/deepseek-v4-flash | ❌(0分-字数不达标) |
+     - score ≥ 60 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | tokenhub/glm-5.2 | ✅({score}分) — 通过 |
+     - score < 60 且 > 0 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | tokenhub/glm-5.2 | ⚠({score}分) — 未通过 |
+     - score == 0 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | tokenhub/glm-5.2 | ❌(0分-字数不达标) |
   d. IF score > best_score → best_score = score, best_version = retry+1
   e. IF score ≥ 60 → BREAK
   f. IF retry ≥ 2 → BREAK
-  g. IF retry ≥ 1 AND 本轮 score < 上轮 score - 3 → BREAK（退化终止）
-  h. retry++
-  i. 调用 @content_writer mode=rewrite → 输入含 第{N}章纪要-v{retry}.md → 输出 第{N}章-初稿-v{retry+1}.md
-  j. GOTO 3a
+  g. IF retry ≥ 1 AND score < prev_score - 3 → BREAK（退化终止）
+  h. prev_score = score ; retry++
+  i. 调用 @content_writer mode=rewrite：
+     - 传入 `versions/{version}/03-纪要/第{N}章纪要-v{retry}.md`（上一轮质检结果）
+     - 传入 `versions/{version}/03-纪要/第{N}章合规审查-v{retry}.md`（上一轮合规结果；writer 优先修复红线/节奏问题，其次处理质检扣分项）
+     - 输出：第{N}章-初稿-v{retry+1}.md
+  j. GOTO 步骤 0（下一轮从合规门禁重新开始）
 ```
 
 **循环结束后**：
-1. 复制 best_version 初稿为终稿 + 复制对应纪要为终稿纪要 + 删除中间版本文件
-2. 若 best_score < 60 → 日志标注"⚠({best_score}分) — 未通过(已重写{retry}次)"
-3. 追加最终日志：`| {now} | 第{N}章重写完成 | - | - | ✅(最佳{best_score}分，第{best_version}轮) |`
+1. 若 best_version 为 null（全部轮次合规不通过，质检从未执行）→ 不生成终稿，日志标注"❌(合规不通过-全部{retry+1}轮)"，本章处理结束
+2. 复制 best_version 初稿为终稿 + 复制对应纪要为终稿纪要 + 复制对应合规审查报告为终稿审查 + 删除中间版本文件
+3. 若 best_score < 60 → 日志标注"⚠({best_score}分) — 未通过(已重写{retry}次)"
+4. 追加最终日志：`| {now} | 第{N}章重写完成 | - | - | ✅(最佳{best_score}分，第{best_version}轮) |`
 
 ### 3d. 记录章节名
 
@@ -339,7 +353,7 @@ print(f'✅ 伏笔摘要已更新: {len(ops)} 条操作 (Ch{chapter_num})')
 
 ### 3f. 输出校验（每次子 agent 调用后强制执行）
 
-**铁则**：每调用完一个子 agent（@plot_planner / @content_writer / @quality_reviewer），必须立即用 bash 验证其宣称的输出文件是否真实存在。
+**铁则**：每调用完一个子 agent（@plot_planner / @content_writer / @compliance_* / @quality_reviewer），必须立即用 bash 验证其宣称的输出文件是否真实存在。
 
 ```bash
 expected_output="versions/{version}/XX-目录/第{N}章-XXX.md"
@@ -354,6 +368,7 @@ fi
 |------|------------|--------------|
 | 3a @plot_planner | `01-大纲/第{N}章章纲.md` | 日志记录 `❌章纲缺失`，重试 1 次 @plot_planner；仍失败则**不继续本章**（不写终稿，自然触发脚本重启时重试） |
 | 3b @content_writer(fresh) | `02-正文/第{N}章-初稿-v1.md` | 日志记录 `❌初稿缺失`，**不写终稿**（脚本重启时重试本章），继续处理下一章 |
+| 3c.0 @compliance_* | `03-纪要/第{N}章合规审查-v{retry+1}.md` | 日志记录 `❌合规审查缺失`，跳过合规门禁直接进入质检（防止合规 agent 故障阻塞流水线） |
 | 3c.a @quality_reviewer | `03-纪要/第{N}章纪要-v{retry+1}.md` | 日志记录 `❌纪要缺失`，视为 score=0（字数不达标）继续循环 |
 | 3c.i @content_writer(rewrite) | `02-正文/第{N}章-初稿-v{retry+1}.md` | 日志记录 `❌重写稿缺失`，直接退出重写循环，取已有 best_version |
 

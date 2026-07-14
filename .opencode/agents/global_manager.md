@@ -201,10 +201,10 @@ permission:
     7e. 创建项目目录结构（bash，平台自适应，Windows 用 New-Item，Linux 用 mkdir -p）：
          在 $PROJECT_DIR/ 下创建四个空目录：01-大纲、02-正文、03-纪要、04-数据
 
-    7f. 复制模板 agents（bash，平台自适应，Windows 用 New-Item + Copy-Item，Linux 用 mkdir -p + cp）：
-         确保 $PROJECT_DIR/.opencode/agents/ 目录存在（含父目录）
-         将 project-agents-template/.opencode/agents/ 下的所有 .md 文件
-         复制到 $PROJECT_DIR/.opencode/agents/ 下
+     7f. 复制模板 agents + skills（bash，平台自适应，Windows 用 New-Item + Copy-Item，Linux 用 mkdir -p + cp）：
+          确保 $PROJECT_DIR/.opencode/ 目录存在（含父目录）
+          将 project-agents-template/.opencode/ 下的 agents/ 和 skills/ 目录
+          复制到 $PROJECT_DIR/.opencode/ 下
 
     7g. 保存最终盐值：
        用 write 工具将步骤 5b 合并后的完整 JSON（纯净 JSON 格式）

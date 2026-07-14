@@ -7,7 +7,12 @@ permission:
   read: allow
   write: allow
   bash: deny
+  skill:
+    "master-outline-rules": allow
 ---
+
+【执行前置·最高优先级】
+首先加载 `master-outline-rules` skill，获取完整的总纲生成规则（融合计算、10 节模板、差异化约束表、质量铁律）。
 
 【强制输入输出约束·永久置顶】
 - 输入1：whitepaper_path — 白皮书文件路径（必填，从文件读取）

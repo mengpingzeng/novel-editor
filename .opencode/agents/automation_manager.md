@@ -26,7 +26,7 @@ permission:
 
 ```
 对每本书逐本执行：
-  original_analyst → [compliance-rule-query skill] → style_mapper → facade_generator → salt_architect → master_outline_generator
+  original_analyst → [compliance-rule-query skill] → @style_mapper（统一入口） → facade_generator → salt_architect → master_outline_generator
   → 复制 project agents → 写入 .phase1_done
   → 下一本
 
@@ -95,7 +95,7 @@ dryrun 模式：`workspace/_dryrun/iteration-state.json`（自动创建，不污
        - **将规则 JSON 写入** `workspace/books/{source_name}/versions/{version}/00-素材/platform_rules.json`
        - 若 00-素材/ 目录不存在，先用 bash `mkdir -p` 创建
 
-   c. **赛道映射**：调用 @style_mapper（或指定的 @style_{track}），输出 `00-素材/赛道映射.json`
+   c. **赛道映射**：调用 @style_mapper，传入 `style_track` 参数切换对应赛道分支，输出 `00-素材/赛道映射.json`
 
    d. **门面生成**：调用 @facade_generator（模式一批量灵感），选取 rank=1，保存 `00-素材/门面候选.json`
 
@@ -116,10 +116,10 @@ dryrun 模式：`workspace/_dryrun/iteration-state.json`（自动创建，不污
       mkdir -p workspace/books/{source_name}/versions/{version}/{00-素材,01-大纲/01-卷纲,02-正文,03-纪要,发布}
       ```
 
-   h. **复制项目 agents**（bash）：
-      ```bash
-      rm -rf workspace/books/{source_name}/.opencode/agents/ && cp -r project-agents-template/.opencode/agents/ workspace/books/{source_name}/.opencode/agents/
-      ```
+    h. **复制项目 agents + skills**（bash）：
+       ```bash
+       rm -rf workspace/books/{source_name}/.opencode/ && cp -r project-agents-template/.opencode/ workspace/books/{source_name}/.opencode/
+       ```
 
     i. **写入完成标记**：`workspace/books/{source_name}/versions/{version}/.phase1_done`
        ```json

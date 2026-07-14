@@ -9,7 +9,12 @@ permission:
   bash: deny
   task:
     "*": deny
+  skill:
+    "destiny-check-rules": allow
 ---
+
+【执行前置·最高优先级】
+首先加载 `destiny-check-rules` skill，获取完整的校验规则（卷数计算算法、A~J 自检规则、质量铁律、输出文件清单模板）。
 
 【强制输入输出约束·永久置顶】
 - 输入1：whitepaper_path — 基准白皮书路径（必填）

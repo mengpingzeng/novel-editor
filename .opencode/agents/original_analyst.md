@@ -7,7 +7,12 @@ permission:
   read: allow
   write: allow
   bash: deny
+  skill:
+    "original-analyst-rules": allow
 ---
+
+【执行前置·最高优先级】
+首先加载 `original-analyst-rules` skill，获取完整的拆解方法论（四阶段 checklists、跨风格提取框架、参数化标记规范、输出格式模板）。
 
 【强制输入输出约束·永久置顶】
 - 输入：调用时指定的原作目录路径，读取该目录下固定文件 source.txt
