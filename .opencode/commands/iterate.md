@@ -24,6 +24,19 @@ Phase 3 评价层 → reviewer_orchestrator（逐本审稿 + 跨书总结）
 /iterate status                   查看当前 iteration-state.json 状态
 ```
 
+### target_chapters 配置（V4 新增）
+
+在 `workspace/iteration-state.json` 中设置 `target_chapters` 控制 Phase 2 的写作模式：
+
+| 值 | 模式 | 行为 |
+|----|------|------|
+| `≥ 1`（如 5、30） | **验证模式** | 写 N 章即停。用于流程验证、质量调试。命令格式：`"执行第N章生产"`（向后兼容） |
+| `0` | **全书生产模式** | 从 `上帝之眼/00-全书命运总谱.md §七` 解析卷结构，逐卷逐章写完为止。命令格式：`"执行第X卷第N章生产"` |
+
+全书生产模式的前提条件：
+- Phase 1.5 命运设计必须完成（上帝之眼目录完整，§七 卷级总览表存在）
+- 所有卷的注入包（02-剧情命运谱 + 05-卷级注入）已就位
+
 ### dryrun 说明
 
 - **目的**：验证 Phase 1 框架生成流程正常
@@ -59,9 +72,18 @@ opencode run --auto "/iterate step"
 automation_manager 对 active_books 逐本生成框架产物，完成后输出 Phase 2 启动命令并停止。
 
 **Phase 2**：逐书写书（每本书单独执行）
+
+验证模式（target_chapters ≥ 1）：
 ```bash
 opencode run --dir workspace/books/{书名}/ \
   --agent chief_editor --auto "全自动执行第1~{N}章生产"
+```
+
+全书生产模式（target_chapters = 0，V4 新增）：
+```bash
+# 管线自动从上帝之眼 §七 解析卷结构，逐卷逐章执行
+# 每章命令格式: "执行第{X}卷第{N}章生产"
+bash scripts/run_pipeline.sh step
 ```
 每本书独立上下文，完成自动写入 `.phase2_done`。
 

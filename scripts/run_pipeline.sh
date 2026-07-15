@@ -26,6 +26,8 @@
 #   - 改 books.{书名}.version = "v3" → 从 v3 开始
 #   - 改 books.{书名}.phase   = "pending" → 强制重跑 Phase 1
 #   - 改 books.{书名}.phase   = "phase2_done" → 跳过 Phase 1/2，仅审稿
+#   - 改 target_chapters = 0  → 全书生产模式（从上帝之眼 §七 解析卷结构，写完为止）
+#   - 改 target_chapters = 5（或任意 ≥1 值） → 验证模式（写 N 章即停）
 #   - phase 值: pending | phase1_done | phase2_done | phase3_done | done
 #
 #  环境变量:
@@ -392,6 +394,163 @@ with open('$STATE_FILE', 'w') as f:
     success "Phase 1 验证通过: $name phase=$final_phase"
 }
 
+# ── 从上帝之眼 00-全书命运总谱.md 解析全书卷结构 ──
+# 全文件扫描匹配卷表行（| 卷号 | ... | 章数 | ...），不依赖 section 编号
+resolve_book_volumes() {
+    local book_dir="$1"
+    local ver="$2"
+    local fate_path="$book_dir/versions/$ver/上帝之眼/00-全书命运总谱.md"
+
+    if [ ! -f "$fate_path" ]; then
+        echo '{"total_volumes":0,"total_chapters":0,"volumes":[]}'
+        return
+    fi
+
+    python3 -c "
+import json, sys
+
+with open('$fate_path') as f:
+    content = f.read()
+
+volumes_raw = []
+for line in content.split('\n'):
+    line = line.strip()
+    if not line.startswith('|') or '---' in line:
+        continue
+    cols = line.split('|')
+    if len(cols) < 4:
+        continue
+    try:
+        vol_id = int(cols[1].strip())
+        ch_count = int(cols[3].strip())
+    except (ValueError, IndexError):
+        continue
+    if vol_id < 1 or ch_count < 1:
+        continue
+    volumes_raw.append((vol_id, ch_count))
+
+seen = set()
+volumes_raw_deduped = []
+for vid, cnt in volumes_raw:
+    if vid not in seen:
+        seen.add(vid)
+        volumes_raw_deduped.append((vid, cnt))
+
+if not volumes_raw_deduped:
+    print(json.dumps({'total_volumes':0,'total_chapters':0,'volumes':[]}))
+    sys.exit(0)
+
+volumes_raw_deduped.sort(key=lambda x: x[0])
+
+volumes = []
+cumulative = 0
+for vid, cnt in volumes_raw_deduped:
+    ch_start = cumulative + 1
+    ch_end = cumulative + cnt
+    volumes.append({'id': vid, 'ch_start': ch_start, 'ch_end': ch_end})
+    cumulative = ch_end
+
+total_chapters = cumulative
+total_volumes = len(volumes)
+print(json.dumps({
+    'total_volumes': total_volumes,
+    'total_chapters': total_chapters,
+    'volumes': volumes
+}, ensure_ascii=False))
+"
+}
+
+# ── 全书生产模式下逐卷逐章写书 ──
+run_phase2_full() {
+    local book_dir="$1"
+    local ver="$2"
+    local name="$3"
+
+    local vol_json
+    vol_json=$(resolve_book_volumes "$book_dir" "$ver")
+
+    local total_volumes total_chapters
+    total_volumes=$(echo "$vol_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['total_volumes'])")
+    total_chapters=$(echo "$vol_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['total_chapters'])")
+
+    if [ "$total_volumes" -le 0 ]; then
+        fail "$name 全书模式失败：无法从上帝之眼 §七 解析卷结构"
+        fail "$name 请先执行 Phase 1.5 命运设计（destiny_designer），确保 00-全书命运总谱.md §七 表格存在"
+        return 1
+    fi
+
+    log "全书结构：$total_volumes 卷 / 共 $total_chapters 章"
+
+    local vol_count=$total_volumes
+    local vol_idx=1
+    while [ "$vol_idx" -le "$vol_count" ]; do
+        local v_start v_end
+        v_start=$(echo "$vol_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['volumes'][$((vol_idx-1))]['ch_start'])")
+        v_end=$(echo "$vol_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['volumes'][$((vol_idx-1))]['ch_end'])")
+
+        log "--- 第${vol_idx}卷：Ch ${v_start}~${v_end} ---"
+
+        if [ "$vol_idx" -gt 1 ]; then
+            run_phase "Phase 2 - ${name} 第${vol_idx}卷卷纲" \
+                --dir "$book_dir" \
+                --agent chief_editor \
+                "初始化第${vol_idx}卷卷纲" || {
+                fail "${name} 第${vol_idx}卷卷纲失败"
+                return 1
+            }
+        fi
+
+        for ((ch=v_start; ch<=v_end; ch++)); do
+            if [ -f "$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md" ]; then
+                warn "跳过第${vol_idx}卷第${ch}章（终稿已存在）"
+                continue
+            fi
+            run_chapter "Phase 2 - ${name} 第${vol_idx}卷第${ch}章" "$CHAPTER_TIMEOUT" \
+                --dir "$book_dir" \
+                --agent chief_editor \
+                "执行第${vol_idx}卷第${ch}章生产"
+            local ch_rc=$?
+            if [ $ch_rc -eq 124 ]; then
+                fail "${name} 第${vol_idx}卷第${ch}章 超时，退出流水线等待重启"
+                return 124
+            elif [ $ch_rc -ne 0 ]; then
+                fail "${name} 第${vol_idx}卷第${ch}章 失败"
+                return 1
+            fi
+            local ch_final="$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md"
+            if [ ! -f "$ch_final" ]; then
+                fail "${name} 第${vol_idx}卷第${ch}章 agent 返回成功但终稿不存在: $ch_final"
+                return 1
+            fi
+            success "${name} 第${vol_idx}卷第${ch}章 终稿已生成"
+        done
+
+        vol_idx=$((vol_idx + 1))
+    done
+
+    python3 -c "
+import json, datetime
+now = datetime.datetime.now().isoformat()
+marker = {
+    'phase': 'phase2_done',
+    'mode': 'full_book',
+    'total_volumes': $total_volumes,
+    'total_chapters': $total_chapters,
+    'timestamp': now
+}
+with open('$book_dir/versions/$ver/.phase2_done', 'w') as f:
+    json.dump(marker, f, ensure_ascii=False, indent=2)
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+if '$name' in s.get('books', {}):
+    s['books']['$name']['phase'] = 'phase2_done'
+with open('$STATE_FILE', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
+"
+    update_book_phase "$name" "phase2_done"
+    success "$name Phase 2 全书完成（$total_volumes 卷 / $total_chapters 章）"
+}
+
 # ── 运行一本书的完整 Pipeline (Phase 1→2→3) ──
 run_book_pipeline() {
     local name="$1"
@@ -432,9 +591,9 @@ run_book_pipeline() {
 
         local ver
         ver=$(get_book_version "$name" "$book_dir")
-        log "═══ Phase 2: 写书 ($chapters 章, $ver) ═══"
+        log "═══ Phase 2: 写书 ($([ "$chapters" -eq 0 ] && echo '全书模式' || echo "$chapters 章"), $ver) ═══"
 
-        # Phase 2.0: 初始化 + 卷纲（独立 session）
+        # Phase 2.0: 初始化 + 卷纲（独立 session，全书/验证模式共享）
         run_phase "Phase 2.0 - $name" \
             --dir "$book_dir" \
             --agent chief_editor \
@@ -442,7 +601,6 @@ run_book_pipeline() {
             fail "$name Phase 2.0 初始化/卷纲失败"
             return 1
         }
-        # 校验：agent 返回成功但卷纲文件可能未产出
         local vol_outline="$book_dir/versions/$ver/01-大纲/01-卷纲/卷纲-第1卷.md"
         if [ ! -f "$vol_outline" ]; then
             fail "$name Phase 2.0 agent 返回成功但卷纲文件不存在: $vol_outline"
@@ -450,37 +608,40 @@ run_book_pipeline() {
         fi
         success "$name Phase 2.0 卷纲已生成"
 
-        # Phase 2.1+: 每章独立 session（断点续跑）
-        for ((ch=1; ch<=chapters; ch++)); do
-            if [ -f "$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md" ]; then
-                warn "跳过第${ch}章（终稿已存在，断点续跑）"
-                continue
-            fi
-            run_chapter "Phase 2.$ch - $name 第${ch}章" "$CHAPTER_TIMEOUT" \
-                --dir "$book_dir" \
-                --agent chief_editor \
-                "执行第${ch}章生产"
-            local ch_rc=$?
-            if [ $ch_rc -eq 124 ]; then
-                fail "$name 第${ch}章 超时，退出流水线等待重启"
-                return 124
-            elif [ $ch_rc -ne 0 ]; then
-                fail "$name 第${ch}章 失败"
-                return 1
-            fi
-            local ch_final="$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md"
-            if [ ! -f "$ch_final" ]; then
-                fail "$name 第${ch}章 agent 返回成功但终稿不存在: $ch_final"
-                return 1
-            fi
-            success "$name 第${ch}章 终稿已生成"
-        done
+        # Phase 2.1+: 模式分支（全书生产 / 验证模式）
+        if [ "$chapters" -eq 0 ]; then
+            # 全书生产模式：从上帝之眼 §七 解析卷结构，逐卷逐章写完
+            run_phase2_full "$book_dir" "$ver" "$name" || return $?
+        else
+            # 验证模式：写指定数量的章节（向后兼容，target_chapters ≥ 1）
+            for ((ch=1; ch<=chapters; ch++)); do
+                if [ -f "$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md" ]; then
+                    warn "跳过第${ch}章（终稿已存在，断点续跑）"
+                    continue
+                fi
+                run_chapter "Phase 2.$ch - $name 第${ch}章" "$CHAPTER_TIMEOUT" \
+                    --dir "$book_dir" \
+                    --agent chief_editor \
+                    "执行第${ch}章生产"
+                local ch_rc=$?
+                if [ $ch_rc -eq 124 ]; then
+                    fail "$name 第${ch}章 超时，退出流水线等待重启"
+                    return 124
+                elif [ $ch_rc -ne 0 ]; then
+                    fail "$name 第${ch}章 失败"
+                    return 1
+                fi
+                local ch_final="$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md"
+                if [ ! -f "$ch_final" ]; then
+                    fail "$name 第${ch}章 agent 返回成功但终稿不存在: $ch_final"
+                    return 1
+                fi
+                success "$name 第${ch}章 终稿已生成"
+            done
 
-        # 写完成标记（标记文件 + state JSON 双写）
-        python3 -c "
+            python3 -c "
 import json, datetime
 now = datetime.datetime.now().isoformat()
-# 标记文件（版本级，兜底兼容）
 marker = {
     'phase': 'phase2_done',
     'chapters_completed': $chapters,
@@ -488,7 +649,6 @@ marker = {
 }
 with open('$book_dir/versions/$ver/.phase2_done', 'w') as f:
     json.dump(marker, f, ensure_ascii=False, indent=2)
-# state JSON（主数据源）
 with open('$STATE_FILE') as f:
     s = json.load(f)
 if '$name' in s.get('books', {}):
@@ -496,9 +656,10 @@ if '$name' in s.get('books', {}):
 with open('$STATE_FILE', 'w') as f:
     json.dump(s, f, ensure_ascii=False, indent=2)
 "
-        update_book_phase "$name" "phase2_done"
-        success "$name Phase 2 完成"
-        phase="phase2_done"
+            update_book_phase "$name" "phase2_done"
+            success "$name Phase 2 完成"
+            phase="phase2_done"
+        fi
     fi
 
     # ── Phase 3: 审稿 ──
