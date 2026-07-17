@@ -80,21 +80,30 @@ permission:
 
 ## 一、初始化 SOP（首次运行自动执行）
 
+0. 获取 content_writer 的模型名（记为 writer_model）：
+   ```bash
+    WRITER_MODEL=$(python3 -c "import json; c=json.load(open('opencode.json')); print(c.get('agent',{}).get('content_writer',{}).get('model','team-deepseek/deepseek-v4-flash'))" 2>/dev/null)
+   ```
+   若 opencode.json 不存在或无覆盖配置，默认值为 team-deepseek/deepseek-v4-flash。
+
 1. 确定当前版本目录：
    - 优先读取 `workspace/iteration-state.json` 中 `books.{书名}.version`（V3 状态驱动）
    - 若 state JSON 中未设置，扫描 `versions/` 取最新版本号
    - 设为 `{version}`
 2. 读取 `versions/{version}/project_salt.json`，提取 `base_novel`、`target_platform`、`classification`、`volume_rhythm_profile`（如有）
 3. 从基准白皮书提取节奏模型 + v2.0 模块（社会语言层次、角色语言指纹库、句式模式库、全局变量清单）：读取 `versions/{version}/00-素材/base_whitepaper.md`
-4. 创建版本目录结构（若不存在）：
-   ```
-   versions/{version}/
-   ├── 01-大纲/01-卷纲/
-   ├── 02-正文/
-   ├── 03-纪要/
-   ├── 发布/
-   └── 04-数据/
-   ```
+4. 创建/校验版本目录结构：
+   - 创建缺失的子目录（若不存在）：
+     ```
+     versions/{version}/
+     ├── 01-大纲/01-卷纲/
+     ├── 02-正文/
+     ├── 03-纪要/
+     ├── 发布/
+     └── 04-数据/
+     ```
+   - **校验 `versions/{version}/发布/novel_metadata.json` 已存在**——该文件由 Phase 1（automation_manager）在框架生成阶段创建。若不存在，说明 Phase 1 未完成或异常，终止并报告原因，禁止继续。
+
 5. 初始化伏笔状态滚动摘要（若不存在）：
    ```bash
    SUMMARY="versions/{version}/04-数据/伏笔状态滚动摘要.md"
@@ -292,7 +301,7 @@ permission:
 
 ### 3b. 正文初稿（mode=fresh）
 
-1. 追加日志：`| {now} | 第{N}章初稿(v1) | content_writer | team-deepseek/deepseek-v4-flash | 进行中 |`
+1. 追加日志：`| {now} | 第{N}章初稿(v1) | content_writer | {writer_model} | 进行中 |`
 2. 记录 content_writer 输入大小（v4：滑动窗口模式，仅最近 2 章纪要 + 伏笔摘要 + 前章终稿）：
    ```bash
    summary_size=$(wc -c < "versions/{version}/04-数据/伏笔状态滚动摘要.md" 2>/dev/null || echo 0)
@@ -308,17 +317,18 @@ permission:
    python scripts/novel_metadata.py record-input --path "versions/{version}/input_monitor.json" --stage "content_writer" --chapter {N} --bytes $total
    ```
 3. 调用 @content_writer mode=fresh：
-   - 传入 `versions/{version}/01-大纲/第{N}章章纲.md`
-   - 传入 `versions/{version}/04-数据/伏笔状态滚动摘要.md`（**v4 新增·必传**）
-   - 传入 `versions/{version}/03-纪要/` 下最近 2 章的纪要文件（**不超过 2 章**）
-   - 传入 `versions/{version}/02-正文/第{N-1}章-终稿.md`（前章终稿，用于衔接）
-   - 输出：`versions/{version}/02-正文/第{N}章-初稿-v1.md`
+    - 传入 `versions/{version}/01-大纲/第{N}章章纲.md`
+    - 传入 `versions/{version}/04-数据/伏笔状态滚动摘要.md`（**v4 新增·必传**）
+    - 传入 `versions/{version}/03-纪要/` 下最近 2 章的纪要文件（**不超过 2 章**）
+    - 传入 `versions/{version}/02-正文/第{N-1}章-终稿.md`（前章终稿，用于衔接）
+    - 传入 当前模型：{writer_model}
+    - 输出：`versions/{version}/02-正文/第{N}章-初稿-v1.md`
    - 日志标记"✅({字数}字)"
 
 ### 3c. 合规门禁 + 质检 + 重写循环（最多 3 轮）
 
 ```
-初始化：retry = 0, best_score = 0, best_version = null, prev_score = null
+初始化：retry = 0, best_score = 0, best_version = null, prev_score = null, symbol_fixed = false
 
 LOOP（本轮稿 = 第{N}章-初稿-v{retry+1}.md）：
 
@@ -340,8 +350,43 @@ LOOP（本轮稿 = 第{N}章-初稿-v{retry+1}.md）：
   d. IF score > best_score → best_score = score, best_version = retry+1
   e. IF score ≥ 60 → BREAK
   f. IF retry ≥ 2 → BREAK
-  g. IF retry ≥ 1 AND score < prev_score - 3 → BREAK（退化终止）
-  h. prev_score = score ; retry++
+   g. IF retry ≥ 1 AND score < prev_score - 3 → BREAK（退化终止）
+
+   **g2. G12 标点符号自动修复（v5 新增·格式问题不触发重写）**：
+      IF !symbol_fixed AND score == 0:
+        a. 读取 `versions/{version}/03-纪要/第{N}章纪要-v{retry+1}.md`
+        b. 若报告中含"对话标点错误"且不含"字数不达标"：
+           → 失败的**唯一**原因是非中文标点符号，属于格式问题，不应触发内容重写
+           → 用 python3 对初稿正文执行全局标点规范化替换：
+             bash:
+               CHAPTER_FILE="versions/{version}/02-正文/第{N}章-初稿-v{retry+1}.md"
+               python3 -c "
+               with open('$CHAPTER_FILE') as f:
+                   text = f.read()
+               # 日式角括号 → 中文双引号
+               text = text.replace('\u300c', '\u201c').replace('\u300d', '\u201d')
+               text = text.replace('\u300e', '\u201c').replace('\u300f', '\u201d')
+               # ASCII 双引号配对替换
+               result = []
+               in_q = False
+               for ch in text:
+                   if ch == '\"':
+                       result.append('\u201d' if in_q else '\u201c')
+                       in_q = not in_q
+                   else:
+                       result.append(ch)
+               with open('$CHAPTER_FILE', 'w') as f:
+                   f.write(''.join(result))
+               print('G12 标点已修复')
+               "
+           → symbol_fixed = true
+           → 不递增 retry（格式修复不计入内容重写次数）
+           → 日志记录：`| {now} | 第{N}章标点修复(第{retry+1}轮) | chief_editor | Python脚本 | ✅(G12标点自动修复，重新质检) |`
+           → GOTO 步骤 a（重新走质检，本轮不触发内容重写）
+        c. 若报告不含"对话标点错误"（即因字数超标等原因得 0 分）：
+           → 正常进入下方 rewrite 流程
+
+   h. prev_score = score ; retry++
   i. 调用 @content_writer mode=rewrite：
      - 传入 `versions/{version}/03-纪要/第{N}章纪要-v{retry}.md`（上一轮质检结果）
      - 传入 `versions/{version}/03-纪要/第{N}章合规审查-v{retry}.md`（上一轮合规结果；writer 优先修复红线/节奏问题，其次处理质检扣分项）
