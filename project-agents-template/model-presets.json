@@ -1,0 +1,7 @@
+{
+  "content_writer": {
+    "team-deepseek/deepseek-v4-flash": { "temperature": 0.6 },
+    "team-deepseek/deepseek-v4-pro":  { "temperature": 0.4 },
+    "tokenhub/glm-5.2":             { "temperature": 0.5 }
+  }
+}

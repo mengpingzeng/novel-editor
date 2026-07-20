@@ -26,8 +26,8 @@ permission:
 
 ```
 对每本书逐本执行：
-  original_analyst → [compliance-rule-query skill] → @style_mapper（统一入口） → facade_generator → salt_architect → master_outline_generator
-  → 复制 project agents → 写入 .phase1_done
+  original_analyst → [compliance-rule-query skill] → @style-mapper（统一入口） → facade_generator → salt_architect → cover_prompt_generator → master_outline_generator
+  → 创建 novel_metadata.json → 复制 project agents → 写入 .phase1_done
   → 下一本
 
 全部完成即停止，不自动进入 Phase 2。
@@ -50,7 +50,7 @@ dryrun 模式：`workspace/_dryrun/iteration-state.json`（自动创建，不污
   "phase": "phase1",
   "output_root": "workspace/books",
   "active_books": [
-    {"name": "凡人修仙传", "platform": "番茄小说", "track": "仙侠"}
+    {"name": "凡人修仙传", "platform": "番茄小说", "track": "仙侠", "word_count_multiplier": 1.0}
   ],
   "books": {
     "凡人修仙传": {"version": "v1", "phase": "pending"}
@@ -95,12 +95,19 @@ dryrun 模式：`workspace/_dryrun/iteration-state.json`（自动创建，不污
        - **将规则 JSON 写入** `workspace/books/{source_name}/versions/{version}/00-素材/platform_rules.json`
        - 若 00-素材/ 目录不存在，先用 bash `mkdir -p` 创建
 
-   c. **赛道映射**：调用 @style_mapper，传入 `style_track` 参数切换对应赛道分支，输出 `00-素材/赛道映射.json`
+   c. **赛道映射**：调用 @style-mapper，传入：
+       - `style_track` 参数（若 state 文件提供了 track 则传入，否则不传，让 style-mapper 自行判定）
+      - `word_count_multiplier` 参数（从 state 文件读取，默认 1.0，范围 [0.8, 1.5]）
+      - 输出 `00-素材/赛道映射.json`
 
    d. **门面生成**：调用 @facade_generator（模式一批量灵感），选取 rank=1，保存 `00-素材/门面候选.json`
 
    e. **盐值校验**：调用 @salt_architect，输出 `project_salt.json`
       - 若校验不通过 → 终止该书，标记状态
+
+   e2. **封面 Prompt 生成**：调用 @cover_prompt_generator，传入 `versions/{version}/project_salt.json`
+      - 输出：`versions/{version}/00-素材/cover_prompt.json`
+      - 若生成失败 → 记录警告 `⚠️ 封面Prompt生成失败`，不终止
 
    f. **总纲生成**：调用 @master_outline_generator，传入：
       - `whitepaper_path` = `workspace/repo/{source_name}/base_whitepaper.md`
@@ -113,12 +120,36 @@ dryrun 模式：`workspace/_dryrun/iteration-state.json`（自动创建，不污
 
    g. **初始化项目目录**（bash）：
       ```bash
-      mkdir -p workspace/books/{source_name}/versions/{version}/{00-素材,01-大纲/01-卷纲,02-正文,03-纪要,发布}
+      mkdir -p workspace/books/{source_name}/versions/{version}/{00-素材,01-大纲/01-卷纲,02-正文,03-纪要,发布,04-数据}
       ```
 
-    h. **复制项目 agents + skills**（bash）：
+   g2. **创建/更新 novel_metadata.json**（bash + python3）：
+
+      若 `发布/novel_metadata.json` 已存在 → 用 python3 覆盖静态字段（title / description / protagonist / cover_prompt 等），保留 `chapter_names` / `chapters_completed` 等动态字段。
+      若不存在 → 调用 `scripts/novel_metadata.py create` 创建。
+
+      字段值来源：
+      | 字段 | 来源 |
+      |------|------|
+      | title[0] | 门面候选.json candidates[0].title |
+      | title[1] | 门面候选.json candidates[0].alt_title |
+      | title[2] | 门面候选.json candidates[1].title |
+      | title[3] | 门面候选.json candidates[2].title |
+      | title[4] | 门面候选.json candidates[3].title |
+      | description | project_salt.json → book_blurb |
+      | genre | classification.primary_category + "/" + platform_label + "/" + tags（取前2个关键词，用"/"拼接） |
+      | protagonist | character_mapping.主角 下所有角色的姓名（如 女主.姓名、男主.姓名），用顿号"、"分隔；若主角映射下确实仅有一个角色，则只填该角色姓名 |
+      | cover_prompt | 00-素材/cover_prompt.json → prompt |
+      | word_count_target | project_salt.json → target_total_word_count.calculated_target |
+      | total_chapters | project_salt.json → target_total_word_count.derived_total_chapters |
+      | source.title | project_salt.json → base_novel |
+      | source.author | "原作者" |
+      | shadow_intensity | 0.5 |
+      | cover_image | "./cover.png" |
+
+   h. **复制项目 agents + skills + 配置**（bash）：
        ```bash
-       rm -rf workspace/books/{source_name}/.opencode/ && cp -r project-agents-template/.opencode/ workspace/books/{source_name}/.opencode/
+       rm -rf workspace/books/{source_name}/.opencode/ && cp -r project-agents-template/.opencode/ workspace/books/{source_name}/.opencode/ && cp project-agents-template/opencode.json workspace/books/{source_name}/opencode.json
        ```
 
     i. **写入完成标记**：`workspace/books/{source_name}/versions/{version}/.phase1_done`

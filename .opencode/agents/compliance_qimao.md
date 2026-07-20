@@ -26,6 +26,10 @@ permission:
 执行逻辑：
 1. 从 `chapter_path` 推导版本目录——提取 `versions/{version}/` 前缀
 2. 加载 `compliance-rule-query` skill，传入 `target_platform="七猫小说"`，获取完整规则集
+2.5. 判定本章场景类型：
+   - 读取章纲（如 `versions/{version}/01-大纲/第N章章纲.md`），提取场景描述/核心事件
+   - 按 skill 中的 `dialogue_ratio_scene_rules` 判定本章场景类别
+   - 确定适用的对话占比不通过线
 3. 读取章节正文，逐项检查以下强制审核项：
 
 强制审核项：
@@ -40,6 +44,10 @@ permission:
    - 第一章必须有明确冲突
    - 快速立人设、抛钩子
    - 开篇代入感是否达标
+3. **对话占比场景化检查**（v5 新增）：
+   - 按步骤 2.5 判定的场景类别，对照 `dialogue_ratio_scene_rules.scene_rules` 中的 floor 值
+   - 低于对应 floor → 判定"不通过"；独处修行场景低于 floor → 判定"需优化"（仅警告）
+   - 绝对底线：任何场景 < 5% → 判定"不通过"
 
 输出规则：
 - 审查报告写入 `versions/{version}/03-纪要/第N章合规审查.md`（从 chapter_path 推导版本目录和章号）

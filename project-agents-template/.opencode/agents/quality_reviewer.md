@@ -1,7 +1,7 @@
 ---
 description: 内容质量与仿写贴合度审核
 mode: subagent
-model: tokenhub/glm-5.2
+model: team-deepseek/deepseek-v4-flash
 temperature: 0.2
 permission:
   read: allow

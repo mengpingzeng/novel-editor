@@ -159,6 +159,63 @@ permission:
     - 若各 phase 的 core_task 关键词与原著模板的关键词重叠率 ≥60% → ⚠️ WARN，提示"节奏阶段与原著模板同构风险较高，建议增加差异化阶段设计"
     - WARN 不阻塞管线，仅为告警
 
+19. 字段交叉一致性校验（Rule 19·V4 新增）：
+    在盐值参数化后，须对以下 19 条交叉规则逐条检查。结果写入 project_salt-issues.md（不阻断流程，仅标记录）。
+
+    第一类：金手指 ↔ 其他（R1-R5）：
+      R1: golden_finger.carrier 含"前世" → tags 至少一个含"重生"；carrier 不含 → tags 不含"重生""穿书"
+      R2: golden_finger.carrier 含"前世/穿书" → 至少一个 phase.core_task 含对应词；carrier 不含 → 所有 phase.core_task 禁止含"前世/穿书/记忆觉醒"
+      R3: golden_finger.carrier 含"前世" → milestone 含"前世真相揭露"；carrier 不含 → milestone 禁止含"前世"
+      R4: opening_anchor.ch1.core_events 中"金手指首触"描述与 carrier 名称一致
+      R5: pleasure_types_pool 中每种爽点须能从 carrier 的 can_do 推导；不出现依赖 cannot_do 的爽点
+
+    第二类：tags ↔ 其他（R6-R9）：
+      R6: tag_constraints 的 key 集合 = tags 数组集合（一个不多一个不少）
+      R7: 每个 tag 须在至少一个 phase.core_task 中有体现
+      R8: 所有 milestone 覆盖的关键主题 ≥ tags 覆盖的主题
+      R9: opening_anchor.ch1 的事件须至少体现 2 个核心 tag
+
+    第三类：phase ↔ 其他（R10-R12）：
+      R10: milestone 数量 ≥ phase 数量（每 phase 至少一个 milestone）
+      R11: forbidden_patterns 中的章数阈值在当前 phase 分布下可实现
+      R12: anti_similarity.rhythm_diff 的大高潮间隔落在 phase 分布合理范围内
+
+    第四类：差异化 ↔ 其他（R13-R15）：
+      R13: anti_similarity.pleasure_diff 中"新增"的每种爽点出现在 pleasure_types_pool 中；"禁用"的标注为低频
+      R14: "新增"的爽点至少一种出现在 opening_rotation 前 5 章中
+      R15: anti_similarity.character_diff 的差异化声明在 character_mapping 主角"差异化调整"中有对应
+
+    第五类：世界/角色 ↔ 其他（R16-R17）：
+      R16: world_mapping.世界规则中的触发条件/阈值出现在对应 phase 或 milestone 中
+      R17: 已由规则 9 覆盖（配角 independent_motivation）
+
+    第六类：开篇内部一致性（R18-R19）：
+      R18: opening_anchor: ch1 觉醒 → ch2 首次使用 → ch3 效果验证，时序不倒置
+      R19: opening_rotation 前 3 章的爽点类型至少 1 种来自 golden_finger 驱动
+
+    每类中的每条规则独立裁判：通过/不通过 + 原因一句话。全部通过则只标记"✅ 全 19 条通过"。
+
+20. 白皮书忠诚度反向校验（Rule 20·V5 新增）：
+    前提：读取映射路径对应的白皮书 §一，提取以下两个布尔特征值：
+      death_restart  — 是否有死亡/重启/穿越节点
+      supernatural   — 是否有超自然/系统元素
+
+    检查项：
+
+    a. 当 death_restart = false 时，盐值中以下字段不得含对应禁用词：
+       - classification.tags → 不得含"重生""穿书""穿越"
+       - golden_finger_spec.carrier → 不得含"前世记忆""穿书先知""重生记忆""穿越/重生记忆""时间回溯"
+       - volume_rhythm_profile.milestone_types → 不得含"前世""重生""穿越"
+       - volume_rhythm_profile.phases[].core_task → 不得含"前世""重生""穿越""前世记忆觉醒"
+
+    b. 当 supernatural = false 时，盐值中以下字段不得含对应禁用词：
+       - classification.tags → 不得含"系统""异能""灵异""怪谈""丧尸""修真""通灵"
+       - golden_finger_spec.carrier → 不得含"系统""异能""灵异""通灵""基因进化""医术""古武""修炼"
+       - volume_rhythm_profile.phases[].core_task → 不得含"系统激活""异能觉醒"
+
+    任意一条违反 → ❌ FAIL，列出"盐值与白皮书特征冲突：[具体条目]"
+    全部通过 → ✅ PASS
+
 ⚠️ 职责边界说明：
 - 平台字数要求、内容红线、排版规范等【平台合规类规则】不属于本 agent 校验范围
 - 平台合规由 target_platform 对应的合规专员在项目初始化阶段与 chief_editor 融合后写入总纲领

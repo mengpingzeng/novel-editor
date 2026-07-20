@@ -67,8 +67,9 @@ permission:
 - `classification`：primary_category / platform_label / tags / tag_constraints / style_orientation / audience_match
 - `core_diff` + `anti_similarity`：角色差异 / 节奏差异 / 爽点差异
 - `volume_rhythm_profile`：phases / pacing_signature / milestone_types / forbidden_patterns（如有）
+- `target_total_word_count`：original_estimated_words / multiplier / calculated_target / derived_volumes / derived_vol_length（V4 新增）
 - `pleasure_rotation`：pleasure_types_pool / opening_rotation（如有）
-- `golden_finger_spec`：carrier / capability_boundary（如有）
+- `golden_finger_spec`：carrier / capability_boundary / capability_progression（如有）
 - `world_mapping` / `character_mapping` / `pleasure_point_model` / `chapter_rhythm` / `writing_style` / `plot_templates`
 - `prohibited_changes[]`：禁止改动底层逻辑清单
 - `opening_anchor`：开篇黄金三章锚点（如有）
@@ -80,8 +81,11 @@ permission:
 ### 2.1 字数融合计算
 
 ```
-目标字数 = (optimal_min + optimal_max) / 2，取整
-允许浮动 = (optimal_max - optimal_min) / 2，取整
+单章目标字数 = (optimal_min + optimal_max) / 2，取整
+单章允许浮动 = (optimal_max - optimal_min) / 2，取整
+
+全书目标总字数 = salt_path → target_total_word_count.calculated_target
+若 salt 无此字段 → 从白皮书 §一 估算总字数取上限 × 默认系数 1.0 作为兜底
 ```
 
 记录融合公式到总纲第二节元数据字段。
@@ -119,7 +123,8 @@ permission:
 ## 二、平台适配
 - 目标平台：{platform}
 - 合规专员来源：{platform}合规专员规则集 v{version}
-- 字数标准：目标 {目标字数} 字，允许浮动 ±{允许浮动} 字
+- 单章字数标准：目标 {单章目标字数} 字，允许浮动 ±{允许浮动} 字
+- 全书目标总字数：{target_total_word_count} 字（来源：原作估算字数 × 系数 {multiplier}）
 - 字数来源：{platform}规则集 v{version} + 白皮书节奏模型融合计算
 - 内容红线：
   1. {逐条列出 content_red_lines 中的每一条}
@@ -133,6 +138,7 @@ permission:
 数据来源：
 - 平台名称、字数区间 → `platform_rules_path`
 - 字数融合计算 → §2.1
+- 全书目标总字数 → `salt_path` → `target_total_word_count`
 - 合规专员名称 → 从 platform_rules_path 的 `platform` + `version` 拼接
 
 ### 第 3 节：分类标识

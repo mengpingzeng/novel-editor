@@ -290,6 +290,7 @@ run_phase1_for_book() {
     local platform="$2"
     local track="$3"
     local chapters="$4"
+    local word_count_multiplier="${5:-1.0}"
     local scope_file="$ROOT_DIR/workspace/.pipeline_scope.json"
 
     if [ ! -f "$STATE_FILE" ]; then
@@ -298,18 +299,26 @@ run_phase1_for_book() {
     fi
 
     # 从主 state 构建 scope 文件：只包含当前书，其他书物理不可见
+    # V5: 从 main state 的 active_books 中继承完整条目字段（word_count_multiplier 等）
     python3 -c "
 import json
 with open('$STATE_FILE') as f:
     s = json.load(f)
 book = s.get('books', {}).get('$name', {})
+orig_active_entry = None
+for b in s.get('active_books', []):
+    if b.get('name') == '$name':
+        orig_active_entry = dict(b)
+        break
+if orig_active_entry is None:
+    orig_active_entry = {'name': '$name', 'platform': '$platform', 'track': '$track'}
 scope = {
     'mode': 'step',
     'phase': 'phase1',
     'current_round': s.get('current_round', 1),
     'passing_score': s.get('passing_score', 10),
     'target_chapters': $chapters,
-    'active_books': [{'name': '$name', 'platform': '$platform', 'track': '$track'}],
+    'active_books': [orig_active_entry],
     'books': {
         '$name': book if book else {'version': 'v1', 'phase': 'pending'}
     }
@@ -407,7 +416,7 @@ resolve_book_volumes() {
     fi
 
     python3 -c "
-import json, sys
+import json, re, sys
 
 with open('$fate_path') as f:
     content = f.read()
@@ -421,8 +430,19 @@ for line in content.split('\n'):
     if len(cols) < 4:
         continue
     try:
-        vol_id = int(cols[1].strip())
-        ch_count = int(cols[3].strip())
+        vol_str = cols[1].strip()
+        vol_match = re.match(r'[Vv]?(\\d+)', vol_str)
+        if not vol_match:
+            continue
+        vol_id = int(vol_match.group(1))
+        # 章数列可能在 col[3] 或 col[4]（取决于表格有无"章号范围"列）
+        ch_str = cols[4].strip() if len(cols) > 4 else ''
+        if not re.match(r'^\\d+$', ch_str):
+            ch_str = cols[3].strip()
+        ch_match = re.match(r'\\d+', ch_str)
+        if not ch_match:
+            continue
+        ch_count = int(ch_match.group())
     except (ValueError, IndexError):
         continue
     if vol_id < 1 or ch_count < 1:
@@ -557,6 +577,7 @@ run_book_pipeline() {
     local platform="$2"
     local track="$3"
     local chapters="$4"
+    local word_count_multiplier="${5:-1.0}"
     local book_dir="$ROOT_DIR/workspace/books/$name"
     local reviewer_dir="$ROOT_DIR/workspace/reviewer"
 
@@ -573,7 +594,7 @@ run_book_pipeline() {
         warn "跳过 Phase 1: $name（phase=$phase）"
     else
         log "═══ Phase 1: 框架生成 ═══"
-        run_phase1_for_book "$name" "$platform" "$track" "$chapters" || {
+        run_phase1_for_book "$name" "$platform" "$track" "$chapters" "$word_count_multiplier" || {
             fail "$name Phase 1 失败"
             return 1
         }
@@ -861,7 +882,7 @@ with open('$STATE_FILE') as f:
 chapters = s.get('target_chapters', 5)
 books = s.get('active_books', [])
 for b in books:
-    print(f'{b[\"name\"]}|{b.get(\"platform\",\"\")}|{b.get(\"track\",\"\")}')
+    print(f'{b[\"name\"]}|{b.get(\"platform\",\"\")}|{b.get(\"track\",\"\")}|{b.get(\"word_count_multiplier\",1.0)}')
 " 2>/dev/null)
     local chapters
     chapters=$(python3 -c "import json; s=json.load(open('$STATE_FILE')); print(s.get('target_chapters',5))")
@@ -879,7 +900,7 @@ for b in books:
     echo "============================================"
     echo ""
 
-    while IFS='|' read -r name platform track; do
+    while IFS='|' read -r name platform track word_count_multiplier; do
         [ -z "$name" ] && continue
         current=$((current + 1))
 
@@ -890,7 +911,7 @@ for b in books:
         log ">>> 第 $current/$book_count 本: $name (phase=$phase, version=$ver) <<<"
 
         local result
-        result=$(run_book_pipeline "$name" "$platform" "$track" "$chapters")
+        result=$(run_book_pipeline "$name" "$platform" "$track" "$chapters" "$word_count_multiplier")
         local rc=$?
 
         if [ $rc -eq 124 ]; then

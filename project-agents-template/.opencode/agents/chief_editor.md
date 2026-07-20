@@ -356,29 +356,11 @@ LOOP（本轮稿 = 第{N}章-初稿-v{retry+1}.md）：
       IF !symbol_fixed AND score == 0:
         a. 读取 `versions/{version}/03-纪要/第{N}章纪要-v{retry+1}.md`
         b. 若报告中含"对话标点错误"且不含"字数不达标"：
-           → 失败的**唯一**原因是非中文标点符号，属于格式问题，不应触发内容重写
+           → 失败的唯一原因是非中文标点符号，属于格式问题，不应触发内容重写
            → 用 python3 对初稿正文执行全局标点规范化替换：
              bash:
                CHAPTER_FILE="versions/{version}/02-正文/第{N}章-初稿-v{retry+1}.md"
-               python3 -c "
-               with open('$CHAPTER_FILE') as f:
-                   text = f.read()
-               # 日式角括号 → 中文双引号
-               text = text.replace('\u300c', '\u201c').replace('\u300d', '\u201d')
-               text = text.replace('\u300e', '\u201c').replace('\u300f', '\u201d')
-               # ASCII 双引号配对替换
-               result = []
-               in_q = False
-               for ch in text:
-                   if ch == '\"':
-                       result.append('\u201d' if in_q else '\u201c')
-                       in_q = not in_q
-                   else:
-                       result.append(ch)
-               with open('$CHAPTER_FILE', 'w') as f:
-                   f.write(''.join(result))
-               print('G12 标点已修复')
-               "
+               python3 -c "import sys; t=open('$CHAPTER_FILE').read(); t=t.replace('\u300c','\u201c').replace('\u300d','\u201d').replace('\u300e','\u201c').replace('\u300f','\u201d'); r=[]; i=False; [r.append('\u201d' if i else '\u201c') or (i:=not i) if c=='\"' else r.append(c) for c in t]; open('$CHAPTER_FILE','w').write(''.join(r))"
            → symbol_fixed = true
            → 不递增 retry（格式修复不计入内容重写次数）
            → 日志记录：`| {now} | 第{N}章标点修复(第{retry+1}轮) | chief_editor | Python脚本 | ✅(G12标点自动修复，重新质检) |`

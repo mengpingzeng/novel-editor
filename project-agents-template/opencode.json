@@ -1,0 +1,8 @@
+{
+  "agent": {
+    "content_writer": {
+      "model": "tokenhub/glm-5.2",
+      "temperature": 0.6
+    }
+  }
+}
