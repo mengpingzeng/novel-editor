@@ -165,11 +165,11 @@ dryrun 模式：`workspace/_dryrun/iteration-state.json`（自动创建，不污
          }
        }
        ```
-       同时更新状态文件的 `phase`（V3 状态驱动）。优先写 scope 文件（若存在）：
-       ```bash
-       STATE='workspace/.pipeline_scope.json'
-       if [ ! -f "$STATE" ]; then STATE='workspace/iteration-state.json'; fi
-       python3 -c "
+同时更新状态文件的 `phase`（V3 状态驱动）。优先写 scope 文件（若存在）：
+        ```bash
+        STATE='workspace/.pipeline_scope.json'
+        if [ ! -f "$STATE" ]; then STATE='workspace/iteration-state.json'; fi
+        python3 -c "
 import json
 with open('$STATE') as f:
     s = json.load(f)
@@ -177,6 +177,32 @@ if '{source_name}' in s.get('books', {}):
     s['books']['{source_name}']['phase'] = 'phase1_done'
 with open('$STATE', 'w') as f:
     json.dump(s, f, ensure_ascii=False, indent=2)
+"
+        
+        j. **创建 book_state.json**（v3 新增·每书独立状态文件）：
+        ```bash
+        python3 -c "
+import json, os, datetime
+book_name = '{source_name}'
+state = {
+    'book_id': book_name,
+    'platform': '{platform_label}',
+    'track': '{track_label}',
+    'phase': 'phase1_done',
+    'version': '{version}',
+    'created_at': datetime.datetime.now().isoformat(),
+    'updated_at': datetime.datetime.now().isoformat(),
+    'total_volumes': None,
+    'total_chapters': None,
+    'volumes': [],
+    'chapters': {},
+    'retry_policy': {'chapter_max_retries': 3, 'max_consecutive_fails': 3},
+    'quality_avg': 0.0,
+    'last_error': None
+}
+path = os.path.join('workspace/books', book_name, 'book_state.json')
+json.dump(state, open(path, 'w'), ensure_ascii=False, indent=2)
+print(f'✅ book_state.json created: {book_name} phase1_done')
 "
 
 

@@ -390,6 +390,39 @@ python scripts/novel_metadata.py add-chapter --path "versions/{version}/发布/n
 ```
 追加日志：`| {now} | 记录章名 | novel_metadata.py | Python 脚本 | ✅(第{N}章: {章节标题}) |`
 
+### 3d5. book_state.json 同步（v3 新增·强制执行）
+
+每章终稿确认后，同步更新 book_state.json 中的章节状态：
+
+```bash
+python3 -c "
+import json, os, re, datetime
+sp = os.path.join(os.getcwd(), 'book_state.json')
+if not os.path.exists(sp):
+    sp = os.path.join(os.getcwd(), '../../workspace', 'iteration-state.json')
+s = json.load(open(sp))
+ch = s.setdefault('chapters', {}).setdefault('{N}', {})
+ch.update({
+    'global_chapter': {N},
+    'volume': {X},
+    'status': 'completed',
+    'retries': {retry_count},
+    'score': {best_score},
+    'title': '{章节标题}',
+    'completed_at': datetime.datetime.now().isoformat(),
+})
+dp = f'versions/{version}/02-正文/第{N}章-终稿.md'
+if os.path.exists(dp):
+    ch['word_count'] = len(re.sub(r'\s+', '', open(dp).read()))
+json.dump(s, open(sp, 'w'), ensure_ascii=False, indent=2)
+print(f'✅ book_state.json updated: Ch{N} completed')
+"
+```
+
+追加日志：`| {now} | 状态同步 | book_state.json | Python 脚本 | ✅(第{N}章完成, {best_score}分, {字数}字) |`
+
+> 若 book_state.json 不存在，回退到 `../../workspace/iteration-state.json`（兼容旧版 pipeline 环境）。
+
 ### 3e. 纪要保存
 
 质检报告已由 quality_reviewer 写入 `versions/{version}/03-纪要/第{N}章纪要.md`。
@@ -584,21 +617,25 @@ fi
      "timestamp": "{now}"
    }
    ```
-   **V3**：同步更新全局状态（`workspace/iteration-state.json`）：
-   ```bash
-   python3 -c "
-import json
-with open('../../workspace/iteration-state.json') as f:
-    s = json.load(f)
-# 从当前目录名提取书名
-import os
+    **V3**：同步更新 book_state.json（优先）或回退到 iteration-state.json：
+    ```bash
+    python3 -c "
+import json, os, datetime
+sp = os.path.join(os.getcwd(), 'book_state.json')
+if not os.path.exists(sp):
+    sp = os.path.join(os.getcwd(), '../../workspace', 'iteration-state.json')
+s = json.load(open(sp))
 book_name = os.path.basename(os.getcwd())
-if book_name in s.get('books', {}):
-    s['books'][book_name]['phase'] = 'phase2_done'
-with open('../../workspace/iteration-state.json', 'w') as f:
-    json.dump(s, f, ensure_ascii=False, indent=2)
+if 'books' in s:
+    if book_name in s.get('books', {}):
+        s['books'][book_name]['phase'] = 'phase2_done'
+else:
+    s['phase'] = 'phase2_done'
+s['updated_at'] = datetime.datetime.now().isoformat()
+json.dump(s, open(sp, 'w'), ensure_ascii=False, indent=2)
+print(f'✅ state updated: {book_name} phase2_done')
 "
-3. 输出完成摘要：
+    3. 输出完成摘要：
    ```
    ═══════════════════════════════════
      Phase 2 完成 — 《{书名}》{version}

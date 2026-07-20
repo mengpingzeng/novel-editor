@@ -1,0 +1,22 @@
+{
+  "_comment": "novel-editor 运行参数配置文件。修改后重启服务生效。",
+
+  "server": {
+    "host": "0.0.0.0",
+    "port": 19080
+  },
+
+  "concurrency": {
+    "max_concurrent_books": 2
+  },
+
+  "retry": {
+    "chapter_max_retries": 3,
+    "max_consecutive_fails": 3
+  },
+
+  "timeout": {
+    "phase1_seconds": 3600,
+    "chapter_seconds": 1800
+  }
+}

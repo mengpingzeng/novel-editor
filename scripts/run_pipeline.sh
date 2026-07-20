@@ -63,6 +63,29 @@ success(){ echo -e "${GREEN}[$(date '+%H:%M:%S')] ✅ $1${NC}"; }
 warn()   { echo -e "${YELLOW}[$(date '+%H:%M:%S')] ⚠️  $1${NC}"; }
 fail()   { echo -e "${RED}[$(date '+%H:%M:%S')] ❌ $1${NC}"; }
 
+# ── 每书互斥锁（与 HTTP API 共享同一 lock 文件） ──
+BOOK_LOCK_FD=""
+acquire_book_lock() {
+    local book_dir="$1"
+    local lock_file="$book_dir/.write_lock"
+    mkdir -p "$(dirname "$lock_file")" 2>/dev/null
+    exec 200>"$lock_file"
+    if ! flock -n 200; then
+        fail "书 $book_dir 正在被另一个进程（HTTP API 或其他 pipeline）操作，退出"
+        exec 200>&-
+        return 1
+    fi
+    BOOK_LOCK_FD="200"
+    return 0
+}
+release_book_lock() {
+    if [ -n "$BOOK_LOCK_FD" ]; then
+        flock -u 200 2>/dev/null
+        exec 200>&-
+        BOOK_LOCK_FD=""
+    fi
+}
+
 # ── 执行 opencode run，同步阻塞等待完成 ──
 run_phase() {
     local label="$1"
@@ -188,24 +211,21 @@ print(s.get('books', {}).get('$book_name', {}).get('version', ''))
     echo "v1"
 }
 
-# ── 从 iteration-state.json 读取某本书的 phase ──
-# 用法: get_book_phase <书名> [fallback_dir]
-# Primary: state JSON books.{name}.phase（key 存在时以 JSON 为准）
-# Fallback: key 不存在时，检查标记文件（旧数据兜底）
+# ── 从 book_state.json（优先）或 iteration-state.json 读取某本书的 phase ──
+# Primary: workspace/books/{name}/book_state.json
+# Fallback: iteration-state.json → marker files
 get_book_phase() {
     local book_name="$1"
     local fallback_dir="${2:-$ROOT_DIR/workspace/books/$book_name}"
+    local bstate="$fallback_dir/book_state.json"
 
-    if [ -f "$STATE_FILE" ]; then
+    if [ -f "$bstate" ]; then
         local phase
         phase=$(python3 -c "
 import json
-with open('$STATE_FILE') as f:
+with open('$bstate') as f:
     s = json.load(f)
-# phase key 存在时直接用 JSON 值（包括 pending）
-p = s.get('books', {}).get('$book_name', {}).get('phase')
-if p is not None:
-    print(p)
+print(s.get('phase', ''))
 " 2>/dev/null)
         if [ -n "$phase" ]; then
             echo "$phase"
@@ -213,7 +233,24 @@ if p is not None:
         fi
     fi
 
-    # Fallback: phase 字段不存在 → 通过版本级标记文件推断
+    # Fallback: iteration-state.json
+    if [ -f "$STATE_FILE" ]; then
+        local phase2
+        phase2=$(python3 -c "
+import json
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+p = s.get('books', {}).get('$book_name', {}).get('phase')
+if p is not None:
+    print(p)
+" 2>/dev/null)
+        if [ -n "$phase2" ]; then
+            echo "$phase2"
+            return 0
+        fi
+    fi
+
+    # Fallback: 通过版本级标记文件推断
     local ver
     ver=$(get_book_version "$book_name" "$fallback_dir")
     if [ -f "$fallback_dir/versions/$ver/.phase3_done" ]; then
@@ -227,11 +264,24 @@ if p is not None:
     fi
 }
 
-# ── 更新 iteration-state.json 中某本书的 phase ──
+# ── 更新 book_state.json（优先）或 iteration-state.json 中某本书的 phase ──
 update_book_phase() {
     local book_name="$1"
     local new_phase="$2"
+    local bstate="$ROOT_DIR/workspace/books/$book_name/book_state.json"
 
+    if [ -f "$bstate" ]; then
+        python3 -c "
+import json
+with open('$bstate') as f:
+    s = json.load(f)
+s['phase'] = '$new_phase'
+with open('$bstate', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
+" 2>/dev/null && return 0 || return 1
+    fi
+
+    # Fallback: iteration-state.json
     python3 -c "
 import json
 with open('$STATE_FILE') as f:
@@ -242,16 +292,29 @@ else:
     s.setdefault('books', {})['$book_name'] = {'phase': '$new_phase'}
 with open('$STATE_FILE', 'w') as f:
     json.dump(s, f, ensure_ascii=False, indent=2)
-success = True
 " 2>/dev/null && return 0 || return 1
 }
 
-# ── 更新 iteration-state.json 中某本书的 score / passed ──
+# ── 更新 book_state.json（优先）或 iteration-state.json 中某本书的 score / passed ──
 update_book_score() {
     local book_name="$1"
     local score="$2"
     local passed="$3"
+    local bstate="$ROOT_DIR/workspace/books/$book_name/book_state.json"
 
+    if [ -f "$bstate" ]; then
+        python3 -c "
+import json
+with open('$bstate') as f:
+    s = json.load(f)
+s['score'] = $score
+s['passed'] = $passed
+with open('$bstate', 'w') as f:
+    json.dump(s, f, ensure_ascii=False, indent=2)
+" 2>/dev/null && return 0 || return 1
+    fi
+
+    # Fallback: iteration-state.json
     python3 -c "
 import json
 with open('$STATE_FILE') as f:
@@ -501,6 +564,13 @@ run_phase2_full() {
 
     log "全书结构：$total_volumes 卷 / 共 $total_chapters 章"
 
+    # 获取每书互斥锁（与 HTTP API 共享同一 .write_lock 文件）
+    if ! acquire_book_lock "$book_dir"; then
+        fail "$name 无法获取写入锁（被 HTTP API 或其他进程占用）"
+        return 1
+    fi
+    trap release_book_lock RETURN
+
     local vol_count=$total_volumes
     local vol_idx=1
     while [ "$vol_idx" -le "$vol_count" ]; do
@@ -635,6 +705,11 @@ run_book_pipeline() {
             run_phase2_full "$book_dir" "$ver" "$name" || return $?
         else
             # 验证模式：写指定数量的章节（向后兼容，target_chapters ≥ 1）
+            if ! acquire_book_lock "$book_dir"; then
+                fail "$name 无法获取写入锁（被 HTTP API 或其他进程占用）"
+                return 1
+            fi
+            trap release_book_lock RETURN
             for ((ch=1; ch<=chapters; ch++)); do
                 if [ -f "$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md" ]; then
                     warn "跳过第${ch}章（终稿已存在，断点续跑）"
