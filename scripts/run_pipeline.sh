@@ -49,6 +49,7 @@ done
 TIMEOUT_PER_PHASE="${PIPELINE_TIMEOUT:-3600}"
 CHAPTER_TIMEOUT="${CHAPTER_TIMEOUT:-1800}"
 PIPELINE_MAX_ATTEMPTS="${PIPELINE_MAX_ATTEMPTS:-3}"
+CHAPTER_MAX_RETRIES=$(python3 -c "import json; print(json.load(open('$ROOT_DIR/config.json')).get('retry',{}).get('chapter_max_retries',3))" 2>/dev/null || echo 3)
 POLL_INTERVAL=15
 POLL_TIMEOUT=300
 
@@ -595,24 +596,33 @@ run_phase2_full() {
                 warn "跳过第${vol_idx}卷第${ch}章（终稿已存在）"
                 continue
             fi
-            run_chapter "Phase 2 - ${name} 第${vol_idx}卷第${ch}章" "$CHAPTER_TIMEOUT" \
-                --dir "$book_dir" \
-                --agent chief_editor \
-                "执行第${vol_idx}卷第${ch}章生产"
-            local ch_rc=$?
-            if [ $ch_rc -eq 124 ]; then
-                fail "${name} 第${vol_idx}卷第${ch}章 超时，退出流水线等待重启"
-                return 124
-            elif [ $ch_rc -ne 0 ]; then
-                fail "${name} 第${vol_idx}卷第${ch}章 失败"
+
+            local retry_count=0
+            local ch_done=false
+
+            while [ "$ch_done" != "true" ] && [ "$retry_count" -lt "$CHAPTER_MAX_RETRIES" ]; do
+                run_chapter "Phase 2 - ${name} 第${vol_idx}卷第${ch}章" "$CHAPTER_TIMEOUT" \
+                    --dir "$book_dir" \
+                    --agent chief_editor \
+                    "执行第${vol_idx}卷第${ch}章生产"
+                local ch_rc=$?
+
+                local ch_final="$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md"
+                if [ $ch_rc -eq 0 ] && [ -f "$ch_final" ]; then
+                    success "${name} 第${vol_idx}卷第${ch}章 终稿已生成"
+                    ch_done=true
+                else
+                    retry_count=$((retry_count + 1))
+                    local reason="exec"
+                    [ $ch_rc -eq 124 ] && reason="timeout"
+                    warn "${name} 第${vol_idx}卷第${ch}章 失败 (retry=${retry_count}/${CHAPTER_MAX_RETRIES}, reason=${reason})"
+                fi
+            done
+
+            if [ "$ch_done" != "true" ]; then
+                fail "${name} 第${vol_idx}卷第${ch}章 重试耗尽 (${retry_count}/${CHAPTER_MAX_RETRIES})"
                 return 1
             fi
-            local ch_final="$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md"
-            if [ ! -f "$ch_final" ]; then
-                fail "${name} 第${vol_idx}卷第${ch}章 agent 返回成功但终稿不存在: $ch_final"
-                return 1
-            fi
-            success "${name} 第${vol_idx}卷第${ch}章 终稿已生成"
         done
 
         vol_idx=$((vol_idx + 1))
@@ -715,24 +725,33 @@ run_book_pipeline() {
                     warn "跳过第${ch}章（终稿已存在，断点续跑）"
                     continue
                 fi
-                run_chapter "Phase 2.$ch - $name 第${ch}章" "$CHAPTER_TIMEOUT" \
-                    --dir "$book_dir" \
-                    --agent chief_editor \
-                    "执行第${ch}章生产"
-                local ch_rc=$?
-                if [ $ch_rc -eq 124 ]; then
-                    fail "$name 第${ch}章 超时，退出流水线等待重启"
-                    return 124
-                elif [ $ch_rc -ne 0 ]; then
-                    fail "$name 第${ch}章 失败"
+
+                local retry_count=0
+                local ch_done=false
+
+                while [ "$ch_done" != "true" ] && [ "$retry_count" -lt "$CHAPTER_MAX_RETRIES" ]; do
+                    run_chapter "Phase 2.$ch - $name 第${ch}章" "$CHAPTER_TIMEOUT" \
+                        --dir "$book_dir" \
+                        --agent chief_editor \
+                        "执行第${ch}章生产"
+                    local ch_rc=$?
+
+                    local ch_final="$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md"
+                    if [ $ch_rc -eq 0 ] && [ -f "$ch_final" ]; then
+                        success "$name 第${ch}章 终稿已生成"
+                        ch_done=true
+                    else
+                        retry_count=$((retry_count + 1))
+                        local reason="exec"
+                        [ $ch_rc -eq 124 ] && reason="timeout"
+                        warn "$name 第${ch}章 失败 (retry=${retry_count}/${CHAPTER_MAX_RETRIES}, reason=${reason})"
+                    fi
+                done
+
+                if [ "$ch_done" != "true" ]; then
+                    fail "$name 第${ch}章 重试耗尽 (${retry_count}/${CHAPTER_MAX_RETRIES})"
                     return 1
                 fi
-                local ch_final="$book_dir/versions/$ver/02-正文/第${ch}章-终稿.md"
-                if [ ! -f "$ch_final" ]; then
-                    fail "$name 第${ch}章 agent 返回成功但终稿不存在: $ch_final"
-                    return 1
-                fi
-                success "$name 第${ch}章 终稿已生成"
             done
 
             python3 -c "
@@ -869,27 +888,37 @@ dryrun_inner() {
         return 1
     fi
 
-    # Phase 2.1-2.3: 每章独立 session（断点续跑）
+    # Phase 2.1-2.3: 每章独立 session（断点续跑，含 chapter_max_retries 重试）
     for ch in 1 2 3; do
         if [ -f "$dryrun_book_dir/versions/$dryrun_ver/02-正文/第${ch}章-终稿.md" ]; then
             warn "跳过第${ch}章（终稿已存在，断点续跑）"
             continue
         fi
-        run_chapter "Phase 2.$ch dryrun" "$CHAPTER_TIMEOUT" \
-            --dir "$dryrun_book_dir" \
-            --agent chief_editor \
-            "执行第${ch}章生产"
-        local ch_rc=$?
-        if [ $ch_rc -eq 124 ]; then
-            fail "dryrun 第${ch}章 超时，退出流水线等待重启"
-            return 124
-        elif [ $ch_rc -ne 0 ]; then
-            fail "dryrun 第${ch}章 失败"
-            return 1
-        fi
-        local dryrun_ch="$dryrun_book_dir/versions/$dryrun_ver/02-正文/第${ch}章-终稿.md"
-        if [ ! -f "$dryrun_ch" ]; then
-            fail "dryrun 第${ch}章 agent 返回成功但终稿不存在: $dryrun_ch"
+
+        local retry_count=0
+        local ch_done=false
+
+        while [ "$ch_done" != "true" ] && [ "$retry_count" -lt "$CHAPTER_MAX_RETRIES" ]; do
+            run_chapter "Phase 2.$ch dryrun" "$CHAPTER_TIMEOUT" \
+                --dir "$dryrun_book_dir" \
+                --agent chief_editor \
+                "执行第${ch}章生产"
+            local ch_rc=$?
+
+            local dryrun_ch="$dryrun_book_dir/versions/$dryrun_ver/02-正文/第${ch}章-终稿.md"
+            if [ $ch_rc -eq 0 ] && [ -f "$dryrun_ch" ]; then
+                success "dryrun 第${ch}章 终稿已生成"
+                ch_done=true
+            else
+                retry_count=$((retry_count + 1))
+                local reason="exec"
+                [ $ch_rc -eq 124 ] && reason="timeout"
+                warn "dryrun 第${ch}章 失败 (retry=${retry_count}/${CHAPTER_MAX_RETRIES}, reason=${reason})"
+            fi
+        done
+
+        if [ "$ch_done" != "true" ]; then
+            fail "dryrun 第${ch}章 重试耗尽"
             return 1
         fi
     done

@@ -122,8 +122,8 @@ def cmd_create(args):
         "protagonist": args.protagonist or "",
         "setting": args.setting or "",
         "chapter_names": [],
-        "cover_generated_by": args.cover_generated_by or "混元 TextToImageLite",
-        "cover_resolution": args.cover_resolution or "768x1024 (3:4)",
+        "cover_generated_by": args.cover_generated_by or "gemini-3.1-flash-image-preview",
+        "cover_resolution": args.cover_resolution or "3:4 (1K)",
         "created_at": datetime.now().strftime("%Y-%m-%d")
     }
     save_json(path, data)

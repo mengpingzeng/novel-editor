@@ -10,7 +10,7 @@
 #   bash scripts/batch_generate_covers.sh --book 春夜困渡     # 仅指定书
 #   bash scripts/batch_generate_covers.sh --retry-failed      # 仅重试失败
 #
-# 依赖: python3, generate_cover.py (混元 TextToImageLite)
+# 依赖: python3, generate_cover.py (ToAPIs Gemini 3.1 Flash)
 # ============================================================
 set -euo pipefail
 
@@ -18,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_DIR="$ROOT_DIR/workspace/books"
 
-COVER_SCRIPT="${COVER_SCRIPT:-/home/main-repo/L1_novel_skill/scripts/generate_cover.py}"
+COVER_SCRIPT="${COVER_SCRIPT:-$SCRIPT_DIR/generate_cover.py}"
 BOOK_FILTER=""
 RETRY_FAILED=false
 
@@ -133,17 +133,27 @@ while IFS= read -r prompt_file; do
 
     negative_prompt=$(python3 -c "import json; d=json.load(open('$prompt_file')); print(d.get('negative_prompt',''))" 2>/dev/null || true)
 
+    style=$(python3 -c "import json; d=json.load(open('$prompt_file')); print(d.get('style',''))" 2>/dev/null || true)
+
     info "Prompt: ${prompt:0:80}..."
+    if [ -n "$style" ]; then
+        info "Style: $style"
+    fi
 
     # ── 调用生成 ──
     mkdir -p "$publish_dir"
 
-    local neg_arg=()
+    neg_arg=()
     if [ -n "$negative_prompt" ]; then
         neg_arg=(--negative-prompt "$negative_prompt")
     fi
 
-    if python3 "$COVER_SCRIPT" --prompt "$prompt" "${neg_arg[@]}" --output "$cover_file" 2>&1 | while IFS= read -r line; do
+    style_arg=()
+    if [ -n "$style" ]; then
+        style_arg=(--style "$style")
+    fi
+
+    if python3 "$COVER_SCRIPT" --prompt "$prompt" "${neg_arg[@]}" "${style_arg[@]}" --output "$cover_file" 2>&1 | while IFS= read -r line; do
         echo "        $line"
     done; then
         # ── 更新 novel_metadata.json ──
@@ -154,8 +164,8 @@ f='$metadata_file'
 if os.path.exists(f):
     d=json.load(open(f))
     d['cover_image']='./cover.png'
-    d['cover_generated_by']='混元 TextToImageLite'
-    d['cover_resolution']='768x1024 (3:4)'
+    d['cover_generated_by']='gemini-3.1-flash-image-preview'
+    d['cover_resolution']='3:4 (1K)'
     json.dump(d, open(f,'w'), ensure_ascii=False, indent=2)
     open(f,'a').write('\n')
 "
