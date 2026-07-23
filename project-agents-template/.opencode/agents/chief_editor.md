@@ -217,6 +217,43 @@ permission:
       - 若注入包 §4 中列出伏笔 ID，但 `03-伏笔命运谱/全书伏笔网络.md` 中无对应条目 → 日志记录 "❌ 注入包伏笔ID {X} 在03中无定义"
 10. 日志记录：`| {now} | 注入包加载 | chief_editor | — | ✅(启用确定性注入模式 — 卷{0X}) |`
 
+### 1.6 卷末判断（v5 新增·卷末章写入前必执行）
+
+> ★ 在进入"二、卷纲规划"之前，判断本章是否为本卷末章。结果供 §3b 传入 content_writer。
+
+1. 从注入包 §1 提取本卷末章号（主路径）：
+   ```bash
+   INJECT="versions/{version}/上帝之眼/05-卷级注入/卷$(printf '%02d' {X})-注入包.md"
+   VOL_END=$(grep "全局章号范围" "$INJECT" 2>/dev/null | grep -oP '\d+' | tail -1)
+   ```
+
+2. 若主路径失败 → 备选路径：从 §1 首章号 + §3 事件链行数推算：
+   ```bash
+   if [ -z "$VOL_END" ]; then
+     VOL_START=$(grep "全局章号范围" "$INJECT" 2>/dev/null | grep -oP '\d+' | head -1)
+     CHAIN_LINES=$(grep -c "^| Ch" "$INJECT" 2>/dev/null || echo 0)
+     if [ "$CHAIN_LINES" -gt 0 ] && [ -n "$VOL_START" ]; then
+       VOL_END=$((VOL_START + CHAIN_LINES - 1))
+     fi
+   fi
+   ```
+
+3. 比较当前章号 N 与末章号，确定 IS_VOLUME_END：
+   ```bash
+   if [ -n "$VOL_END" ] && [ "{N}" = "$VOL_END" ]; then
+     IS_VOLUME_END="true"
+   else
+     IS_VOLUME_END="false"
+   fi
+   echo ">>> 卷末判断: N={N}, 卷末章=$VOL_END (提取方式=$([ -z '$VOL_END' ] && echo '降级false' || echo '成功')), IS_VOLUME_END=$IS_VOLUME_END <<<"
+   ```
+
+4. 日志记录：
+   - IS_VOLUME_END=true → `| {now} | 卷末判断 | chief_editor | — | ✅(第{N}章为本卷末章) |`
+   - IS_VOLUME_END=false → 不记录（非特殊事件）
+
+> 注意：IS_VOLUME_END=false 时，卷末相关规则（§9.8 卷末章模式、§四 卷完成处理）不激活。这是一种安全降级——不激活卷末规则不会造成更严重的问题，但误激活会造成普通章被当作卷末处理。
+
 ---
 
 ## 二、卷纲规划
@@ -279,7 +316,19 @@ permission:
 ### 3a. 章纲生成
 
 1. 追加日志：`| {now} | 第{N}章章纲 | plot_planner | team-deepseek/deepseek-v4-flash | 进行中 |`
-2. 记录 plot_planner 输入大小（v4：滑动窗口模式，仅统计最近 3 章纪要 + 伏笔摘要）：
+2. 读取平台规则中的场景对话占比要求（v5 新增·章纲预知合规约束）：
+   ```bash
+   RULES_FILE="versions/{version}/00-素材/platform_rules.json"
+   if [ -f "$RULES_FILE" ]; then
+     SCENE_RULES=$(python3 -c "import json; r=json.load(open('$RULES_FILE')); print(json.dumps(r.get('dialogue_ratio_scene_rules',{}), ensure_ascii=False))")
+     PLATFORM=$(python3 -c "import json; r=json.load(open('$RULES_FILE')); print(r.get('platform','未知'))")
+     echo ">>> 平台规则已加载: $PLATFORM"
+   else
+     SCENE_RULES="{}"
+     echo "⚠️ platform_rules.json 不存在，plot_planner 将无对话占比约束"
+   fi
+   ```
+3. 记录 plot_planner 输入大小（v4：滑动窗口模式，仅统计最近 3 章纪要 + 伏笔摘要）：
    ```bash
    summary_size=$(wc -c < "versions/{version}/04-数据/伏笔状态滚动摘要.md" 2>/dev/null || echo 0)
    # 统计最近 3 章纪要（若不存在则跳过）
@@ -294,6 +343,7 @@ permission:
    ```
 3. 调用 @plot_planner（章纲模式）：
    - 传入 `versions/{version}/仿写衍生总纲领.md` + 章号{N}
+   - （v5 新增）传入 `dialogue_ratio_scene_rules = {SCENE_RULES}`（来自 §3a 步骤 2 的 platform_rules.json 解析结果；若为空则降级为无约束模式）
    - （若本卷有注入包）传入注入包中本章对应的事件行（核心事件/出场角色/伏笔约束/爽点类型）
    - （若本卷有注入包）传入注入包中本卷可接触角色的当前状态描述
    - 输出：`versions/{version}/01-大纲/第{N}章章纲.md`
@@ -322,13 +372,14 @@ permission:
     - 传入 `versions/{version}/03-纪要/` 下最近 2 章的纪要文件（**不超过 2 章**）
     - 传入 `versions/{version}/02-正文/第{N-1}章-终稿.md`（前章终稿，用于衔接）
     - 传入 当前模型：{writer_model}
+    - （v5 新增）传入 `is_volume_end = {IS_VOLUME_END}`（来自 §1.6 卷末判断结果）
     - 输出：`versions/{version}/02-正文/第{N}章-初稿-v1.md`
    - 日志标记"✅({字数}字)"
 
 ### 3c. 合规门禁 + 质检 + 重写循环（最多 3 轮）
 
 ```
-初始化：retry = 0, best_score = 0, best_version = null, prev_score = null, symbol_fixed = false
+初始化：retry = 0, best_score = 0, best_version = null, prev_score = null, symbol_fixed = false, compliance_skip_count = 0
 
 LOOP（本轮稿 = 第{N}章-初稿-v{retry+1}.md）：
 
@@ -338,15 +389,28 @@ LOOP（本轮稿 = 第{N}章-初稿-v{retry+1}.md）：
         - target_platform="番茄小说" → @compliance_tomato(chapter_path=versions/{version}/02-正文/第{N}章-初稿-v{retry+1}.md)
         - target_platform="七猫小说" → @compliance_qimao(chapter_path=versions/{version}/02-正文/第{N}章-初稿-v{retry+1}.md)
      c. 合规专员写入 `versions/{version}/03-纪要/第{N}章合规审查-v{retry+1}.md`，返回一行摘要
-     d. 解析摘要中的合规结果，记录日志：
-        - 合规通过 → | {now} | 第{N}章合规(第{retry+1}轮) | compliance_{平台} | team-deepseek/deepseek-v4-flash | ✅(通过) |
-        - 合规不通过 → | {now} | 第{N}章合规(第{retry+1}轮) | compliance_{平台} | team-deepseek/deepseek-v4-flash | ❌(不通过：{摘要原文}) → 跳到步骤 h（跳过质检，直接进入 rewrite）
+     d. 检查输出文件 `versions/{version}/03-纪要/第{N}章合规审查-v{retry+1}.md` 是否存在：
+        - 文件存在 → 解析摘要中的合规结果：
+          - 合规通过 → | {now} | 第{N}章合规(第{retry+1}轮) | compliance_{平台} | team-deepseek/deepseek-v4-flash | ✅(通过) |
+          - 合规不通过 → | {now} | 第{N}章合规(第{retry+1}轮) | compliance_{平台} | team-deepseek/deepseek-v4-flash | ❌(不通过：{摘要原文})
+                        → IF retry ≥ 2：日志记录"⚠(合规持续不通过·已达重试上限{retry}次·降级质检)" → GOTO 步骤 a（越过合规门禁，强制执行质检并取最高分版本为终稿）
+                        → ELSE：跳到步骤 h（保留一次 rewrite 机会，跳过质检，直接进入 rewrite）
+        - 文件不存在（合规 agent 崩溃/超时）：
+          → compliance_skip_count++
+          → 日志：| {now} | 第{N}章合规(第{retry+1}轮) | compliance_{平台} | — | ⚠️(输出文件缺失·第{compliance_skip_count}次跳过) |
+          → IF compliance_skip_count ≥ 2：
+            → 日志：| {now} | 第{N}章合规 | — | — | ⛔(合规agent连续{compliance_skip_count}次故障·永久放弃门禁·降级质检) |
+            → 强制进入步骤 a（质检），本章后续轮次不再调用合规 agent
+          → ELSE（compliance_skip_count == 1）：
+            → 日志：⏭️(跳过合规门禁·直接进入质检·下轮重试合规) |
+            → 进入步骤 a（质检），但保留下一轮的合规调用机会
+
   a. 调用 @quality_reviewer → 读取 第{N}章-初稿-v{retry+1}.md → 输出 第{N}章纪要-v{retry+1}.md
   b. 解析分数 score
   c. 记录日志：
-     - score ≥ 60 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | tokenhub/glm-5.2 | ✅({score}分) — 通过 |
-     - score < 60 且 > 0 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | tokenhub/glm-5.2 | ⚠({score}分) — 未通过 |
-     - score == 0 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | tokenhub/glm-5.2 | ❌(0分-字数不达标) |
+     - score ≥ 60 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | team-deepseek/deepseek-v4-flash | ✅({score}分) — 通过 |
+     - score < 60 且 > 0 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | team-deepseek/deepseek-v4-flash | ⚠({score}分) — 未通过 |
+     - score == 0 → | {now} | 第{N}章质检(第{retry+1}轮) | quality_reviewer | team-deepseek/deepseek-v4-flash | ❌(0分-字数不达标) |
   d. IF score > best_score → best_score = score, best_version = retry+1
   e. IF score ≥ 60 → BREAK
   f. IF retry ≥ 2 → BREAK
@@ -373,14 +437,22 @@ LOOP（本轮稿 = 第{N}章-初稿-v{retry+1}.md）：
      - 传入 `versions/{version}/03-纪要/第{N}章纪要-v{retry}.md`（上一轮质检结果）
      - 传入 `versions/{version}/03-纪要/第{N}章合规审查-v{retry}.md`（上一轮合规结果；writer 优先修复红线/节奏问题，其次处理质检扣分项）
      - 输出：第{N}章-初稿-v{retry+1}.md
-  j. GOTO 步骤 0（下一轮从合规门禁重新开始）
+  j. IF compliance_skip_count ≥ 2 → GOTO 步骤 a（永久跳过合规门禁，下一轮直接质检）
+     ELSE → GOTO 步骤 0（正常回到合规门禁）
 ```
 
 **循环结束后**：
-1. 若 best_version 为 null（全部轮次合规不通过，质检从未执行）→ 不生成终稿，日志标注"❌(合规不通过-全部{retry+1}轮)"，本章处理结束
-2. 复制 best_version 初稿为终稿 + 复制对应纪要为终稿纪要 + 复制对应合规审查报告为终稿审查 + 删除中间版本文件
-3. 若 best_score < 60 → 日志标注"⚠({best_score}分) — 未通过(已重写{retry}次)"
-4. 追加最终日志：`| {now} | 第{N}章重写完成 | - | - | ✅(最佳{best_score}分，第{best_version}轮) |`
+1. 若 best_version 为 null 且 compliance_skip_count ≥ 2（全部轮次因合规 agent 故障跳过，质检从未执行）：
+   → 取最新一版初稿（v{retry+1}）强制执行一次质检
+   → 更新 best_score / best_version（若通过则取该版为终稿）
+   → 日志标注：`⛔(合规agent故障·降级导出·最佳{best_score}分·第{best_version}轮)`
+2. 若 best_version 为 null 且 compliance_skip_count < 2（合规内容不通过且质检从未执行·安全兜底）：
+   → 取最新一版初稿（v{retry+1}）强制执行一次质检
+   → 更新 best_score / best_version（以该版为终稿）
+   → 日志标注"⚠️(合规持续不通过·已达重试上限·降级导出·最佳{best_score}分·第{best_version}轮)"
+3. 复制 best_version 初稿为终稿 + 复制对应纪要为终稿纪要 + 复制对应合规审查报告为终稿审查 + 删除中间版本文件
+4. 若 best_score < 60 → 日志标注"⚠({best_score}分) — 未通过(已重写{retry}次)"
+5. 追加最终日志：`| {now} | 第{N}章重写完成 | - | - | ✅(最佳{best_score}分，第{best_version}轮) |`
 
 ### 3d. 记录章节名
 
@@ -512,7 +584,7 @@ fi
 |------|------------|--------------|
 | 3a @plot_planner | `01-大纲/第{N}章章纲.md` | 日志记录 `❌章纲缺失`，重试 1 次 @plot_planner；仍失败则**不继续本章**（不写终稿，自然触发脚本重启时重试） |
 | 3b @content_writer(fresh) | `02-正文/第{N}章-初稿-v1.md` | 日志记录 `❌初稿缺失`，**不写终稿**（脚本重启时重试本章），继续处理下一章 |
-| 3c.0 @compliance_* | `03-纪要/第{N}章合规审查-v{retry+1}.md` | 日志记录 `❌合规审查缺失`，跳过合规门禁直接进入质检（防止合规 agent 故障阻塞流水线） |
+| 3c.0 @compliance_* | `03-纪要/第{N}章合规审查-v{retry+1}.md` | 日志记录 `⚠️合规审查缺失`，累加 `compliance_skip_count`。第1次跳过 → 进入质检但保留下轮合规调用；≥2次 → **永久放弃合规门禁**，全章降级为质检驱动。防止合规 agent 故障无限阻塞流水线 |
 | 3c.a @quality_reviewer | `03-纪要/第{N}章纪要-v{retry+1}.md` | 日志记录 `❌纪要缺失`，视为 score=0（字数不达标）继续循环 |
 | 3c.i @content_writer(rewrite) | `02-正文/第{N}章-初稿-v{retry+1}.md` | 日志记录 `❌重写稿缺失`，直接退出重写循环，取已有 best_version |
 
@@ -590,9 +662,81 @@ fi
    ```
 
 3. **记录归档日志**：
-   ```
-   | {now} | 卷{X}归档 | chief_editor | — | ✅(卷{X} 完成，02/05一致，{CHAPTER_COUNT}/{EXPECTED}章) |
-   ```
+    ```
+    | {now} | 卷{X}归档 | chief_editor | — | ✅(卷{X} 完成，02/05一致，{CHAPTER_COUNT}/{EXPECTED}章) |
+    ```
+
+### 四之三·伏笔归档（v5 新增·卷完成时执行）
+
+> ★ 当前卷全部章节完成后，将主表中"已回收"的伏笔行归档到独立文件，防止伏笔摘要无界膨胀。
+
+**触发条件**：IS_VOLUME_END=true（由 §1.6 确定）。
+
+**归档逻辑**：
+```bash
+SUMMARY="versions/{version}/04-数据/伏笔状态滚动摘要.md"
+ARCHIVE="versions/{version}/04-数据/已回收伏笔归档.md"
+
+# 读取卷首章号和末章号（从注入包 §1）
+INJECT="versions/{version}/上帝之眼/05-卷级注入/卷$(printf '%02d' {X})-注入包.md"
+VOL_START=$(grep "全局章号范围" "$INJECT" 2>/dev/null | grep -oP '\d+' | head -1)
+VOL_END=$(grep "全局章号范围" "$INJECT" 2>/dev/null | grep -oP '\d+' | tail -1)
+
+# 若无法从注入包获取，从已知信息推断：N 为卷末章，卷长度约 20-30 章
+if [ -z "$VOL_START" ] || [ -z "$VOL_END" ]; then
+  echo "⚠️ 无法从注入包获取卷章号范围，伏笔归档跳过"
+else
+  # 归档已回收的伏笔
+  python3 -c "
+import re
+
+summary_file = '$SUMMARY'
+archive_file = '$ARCHIVE'
+vol_start = $VOL_START
+vol_end = $VOL_END
+vol_num = {X}
+
+with open(summary_file) as f:
+    lines = f.readlines()
+
+keep = []
+archive_rows = []
+
+for line in lines:
+    # 匹配已回收且回收章在本卷范围内的行
+    m = re.match(r'\|\s*(\S+)\s*\|.*\|.*\|\s*已回收\s*\|.*\|\s*Ch(\d+)\s*\|', line)
+    if m:
+        recovery_ch = int(m.group(2))
+        if vol_start <= recovery_ch <= vol_end:
+            archive_rows.append(line.strip())
+            continue
+    keep.append(line)
+
+# 写入归档文件（追加模式）
+with open(archive_file, 'a') as f:
+    if archive_rows:
+        f.write(f'\n## 卷 {vol_num:02d} 归档（Ch {vol_start}-{vol_end}）\n')
+        for row in archive_rows:
+            f.write(row + '\n')
+
+# 重写主表
+with open(summary_file, 'w') as f:
+    f.writelines(keep)
+
+print(f'✅ 伏笔归档完成：卷{vol_num}归档 {len(archive_rows)} 行，主表剩余 {len(keep)} 行')
+"
+fi
+```
+
+**归档条件说明**：
+- 仅"状态 = 已回收"且"回收章在本卷章号范围内"的行被归档
+- 跨卷伏笔（卷 1 埋、卷 3 回收）在卷 1 结束时不会被归档——回收章在卷 3，不满足条件
+- 已回收伏笔归档.md 保留全量历史，后续复盘可读取
+
+**日志记录**：
+```
+| {now} | 卷{X}伏笔归档 | chief_editor | Python脚本 | ✅(归档{N}行，主表剩余{M}行) |
+```
 
 ---
 

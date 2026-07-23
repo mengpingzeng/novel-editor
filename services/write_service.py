@@ -1,15 +1,18 @@
 """
 Phase 2 write service — orchestrates chapter writing via chief_editor agent.
 
-- Determines next chapter to write from book_state.json
-- Resolves volume from god's eye data
-- Runs chief_editor in the book's working directory
+Mirrors shell's run_phase2_full / validation-mode chapter loop:
+- Chapter failure causes immediate exit (chapters are strictly serial; Ch N depends on Ch N-1).
+- On success, writes .phase2_done marker and advances phase in book_state.json.
+- _ensure_volume_resources returns a boolean; errors are not silently swallowed.
+- Before writing a chapter, checks if the final draft already exists on disk (safety net).
 """
 
 import json
 import os
 import re
 import subprocess
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from config import config
@@ -18,6 +21,7 @@ from services.book_state import (
     ensure_book_state,
     get_next_chapter,
     update_chapter,
+    save_book_state,
     phase_ge,
 )
 
@@ -26,7 +30,6 @@ BOOKS_DIR = os.path.join(ROOT_DIR, "workspace", "books")
 
 
 def write_chapters(book_id: str, chapters: int = 1) -> str:
-    """Submit a chapter writing task. Returns task_id."""
     from worker.task_queue import task_queue as tq
     return tq.submit("write", book_id, {
         "chapters": chapters,
@@ -34,22 +37,22 @@ def write_chapters(book_id: str, chapters: int = 1) -> str:
 
 
 def execute_write(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute chapter writing for a book. Called by worker."""
     chapters_to_write = params.get("chapters", 1)
 
     state = ensure_book_state(book_id)
     if state is None:
         return {"success": False, "error": f"Book not found: {book_id}"}
 
-    phase = state.get("phase", "pending")
-    if not phase_ge(phase, "phase1_done"):
-        return {"success": False, "error": f"Book not registered yet (phase={phase}). Register first."}
+    book_phase = state.get("phase", "pending")
+    if not phase_ge(book_phase, "phase1_done"):
+        return {"success": False,
+                "error": f"Book not registered yet (phase={book_phase}). Register first."}
 
     book_dir = os.path.join(BOOKS_DIR, book_id)
     version = state.get("version", "v1")
 
     written = 0
-    errors = []
+    written_chapters = []
 
     for _ in range(chapters_to_write):
         next_ch = get_next_chapter(book_id)
@@ -59,28 +62,46 @@ def execute_write(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         global_chapter = next_ch["global_chapter"]
         volume = next_ch["volume"]
 
-        _ensure_volume_resources(book_id, volume, version)
+        ch_final = os.path.join(
+            book_dir, "versions", version,
+            "02-正文", f"第{global_chapter}章-终稿.md"
+        )
+
+        if os.path.exists(ch_final):
+            word_count = _count_words(ch_final)
+            title = _extract_title(ch_final)
+            update_chapter(book_id, global_chapter,
+                           status="completed", retries=0,
+                           word_count=word_count, title=title,
+                           volume=volume)
+            written += 1
+            written_chapters.append({"global_chapter": global_chapter, "volume": volume})
+            continue
+
+        if not _ensure_volume_resources(book_id, volume, version):
+            return {"success": False, "chapters_written": written,
+                    "written_chapters": written_chapters,
+                    "error": f"Failed to generate volume {volume} resources for chapter {global_chapter}"}
 
         command = f"执行第{volume}卷第{global_chapter}章生产"
 
+        max_retries = state.get("retry_policy", {}).get(
+            "chapter_max_retries", config.chapter_max_retries)
         retries = 0
-        max_retries = state.get("retry_policy", {}).get("chapter_max_retries", 3)
+        last_error_type = None
+        chapter_ok = False
 
         while retries < max_retries:
             try:
                 result = subprocess.run(
-                    ["opencode", "run", "--dangerously-skip-permissions",
+                    ["timeout", str(config.chapter_timeout),
+                     "opencode", "run", "--dangerously-skip-permissions",
                      "--dir", book_dir,
                      "--agent", "chief_editor",
                      command],
-                    timeout=config.chapter_timeout,
-                    capture_output=True,
-                    text=True,
-                )
-
-                ch_final = os.path.join(
-                    book_dir, "versions", version,
-                    "02-正文", f"第{global_chapter}章-终稿.md"
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
                 )
 
                 if result.returncode == 0 and os.path.exists(ch_final):
@@ -91,44 +112,69 @@ def execute_write(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
                                    word_count=word_count, title=title,
                                    volume=volume)
                     written += 1
+                    written_chapters.append({"global_chapter": global_chapter, "volume": volume})
+                    chapter_ok = True
                     break
+                elif result.returncode == 124:
+                    retries += 1
+                    last_error_type = "timeout"
+                    update_chapter(book_id, global_chapter, retries=retries)
                 else:
                     retries += 1
+                    last_error_type = "exec"
                     update_chapter(book_id, global_chapter, retries=retries)
-                    if retries >= max_retries:
-                        update_chapter(book_id, global_chapter,
-                                       status="failed", retries=retries,
-                                       last_error=f"Exhausted {max_retries} retries")
-                        errors.append(f"Ch{global_chapter}: failed after {max_retries} retries")
 
-            except subprocess.TimeoutExpired:
-                retries += 1
-                update_chapter(book_id, global_chapter, retries=retries)
-                if retries >= max_retries:
-                    update_chapter(book_id, global_chapter,
-                                   status="failed", retries=retries,
-                                    last_error=f"Timeout after {config.chapter_timeout}s × {max_retries}")
-                    errors.append(f"Ch{global_chapter}: timeout")
             except FileNotFoundError:
-                return {"success": False, "error": "opencode command not found on PATH"}
+                return {"success": False, "error": "timeout or opencode command not found on PATH"}
 
-        consecutive_fails = _count_consecutive_fails(book_id)
-        max_consecutive = state.get("retry_policy", {}).get("max_consecutive_fails", 3)
-        if consecutive_fails >= max_consecutive:
-            errors.append(f"Book {book_id}: {consecutive_fails} consecutive failures, pausing")
-            break
+        if not chapter_ok:
+            update_chapter(book_id, global_chapter,
+                           status="failed", retries=retries,
+                           last_error=f"Failed after {max_retries} retries (last: {last_error_type})")
+            return {"success": False, "chapters_written": written,
+                    "written_chapters": written_chapters,
+                    "error": f"Chapter {global_chapter} failed after {max_retries} retries"}
 
-    if errors:
-        return {"success": False, "chapters_written": written,
-                "error": "; ".join(errors)}
     if written == 0:
         return {"success": True, "chapters_written": 0,
+                "written_chapters": [],
                 "message": "All chapters already completed"}
-    return {"success": True, "chapters_written": written}
+
+    _mark_phase2_done(book_id)
+
+    return {"success": True, "chapters_written": written,
+            "written_chapters": written_chapters}
 
 
-def _ensure_volume_resources(book_id: str, volume: int, version: str):
-    """Ensure god's eye injection package and volume outline exist for target volume."""
+def _mark_phase2_done(book_id: str):
+    state = load_book_state(book_id)
+    if state is None:
+        return
+
+    book_dir = os.path.join(BOOKS_DIR, book_id)
+    version = state.get("version", "v1")
+    ver_dir = os.path.join(book_dir, "versions", version)
+
+    chapters = state.get("chapters", {})
+    completed_count = sum(
+        1 for c in chapters.values() if c.get("status") == "completed"
+    )
+
+    marker_path = os.path.join(ver_dir, ".phase2_done")
+    marker = {
+        "phase": "phase2_done",
+        "chapters_completed": completed_count,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    os.makedirs(ver_dir, exist_ok=True)
+    with open(marker_path, "w", encoding="utf-8") as f:
+        json.dump(marker, f, ensure_ascii=False, indent=2)
+
+    state["phase"] = "phase2_done"
+    save_book_state(book_id, state)
+
+
+def _ensure_volume_resources(book_id: str, volume: int, version: str) -> bool:
     book_dir = os.path.join(BOOKS_DIR, book_id)
     ver_dir = os.path.join(book_dir, "versions", version)
 
@@ -137,30 +183,38 @@ def _ensure_volume_resources(book_id: str, volume: int, version: str):
     inject_file = os.path.join(inject_dir, f"卷{vol_padded}-注入包.md")
     vol_outline = os.path.join(ver_dir, "01-大纲", "01-卷纲", f"卷纲-第{volume}卷.md")
 
-    if not os.path.exists(inject_file) and volume > 1:
+    if os.path.exists(vol_outline):
+        if volume == 1 or os.path.exists(inject_file):
+            return True
+
+    if volume > 1:
+        prompt = f"初始化第{volume}卷卷纲"
+    else:
+        prompt = "初始化项目并生成第1卷卷纲"
+
+    timeout = config.phase1_timeout if volume == 1 else config.chapter_timeout
+    max_retries = config.chapter_max_retries
+
+    for attempt in range(max_retries):
         try:
             subprocess.run(
-                ["opencode", "run", "--dangerously-skip-permissions",
+                ["timeout", str(timeout),
+                 "opencode", "run", "--dangerously-skip-permissions",
                  "--dir", book_dir,
                  "--agent", "chief_editor",
-                 f"初始化第{volume}卷卷纲"],
-                timeout=config.chapter_timeout,
-                capture_output=True,
+                 prompt],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
             )
-        except Exception:
-            pass
-    elif volume == 1 and not os.path.exists(vol_outline):
-        try:
-            subprocess.run(
-                ["opencode", "run", "--dangerously-skip-permissions",
-                 "--dir", book_dir,
-                 "--agent", "chief_editor",
-                 "初始化项目并生成第1卷卷纲"],
-                timeout=config.chapter_timeout,
-                capture_output=True,
-            )
-        except Exception:
-            pass
+        except FileNotFoundError:
+            return False
+
+        if os.path.exists(vol_outline):
+            if volume == 1 or os.path.exists(inject_file):
+                return True
+
+    return False
 
 
 def _count_words(path: str) -> int:
@@ -182,17 +236,3 @@ def _extract_title(path: str) -> str:
         return os.path.basename(path).replace(".md", "")
     except Exception:
         return ""
-
-
-def _count_consecutive_fails(book_id: str) -> int:
-    state = load_book_state(book_id)
-    if state is None:
-        return 0
-    chapters = state.get("chapters", {})
-    count = 0
-    for key in sorted(chapters.keys(), key=int, reverse=True):
-        if chapters[key].get("status") == "failed":
-            count += 1
-        else:
-            break
-    return count

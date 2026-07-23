@@ -65,11 +65,6 @@ class Config:
                          ("retry", "chapter_max_retries"), 3)
 
     @property
-    def max_consecutive_fails(self) -> int:
-        return self._int("MAX_CONSECUTIVE_FAILS",
-                         ("retry", "max_consecutive_fails"), 3)
-
-    @property
     def phase1_timeout(self) -> int:
         return self._int("PHASE1_TIMEOUT",
                          ("timeout", "phase1_seconds"), 3600)
@@ -78,6 +73,16 @@ class Config:
     def chapter_timeout(self) -> int:
         return self._int("CHAPTER_TIMEOUT",
                          ("timeout", "chapter_seconds"), 1800)
+
+    @property
+    def cover_timeout(self) -> int:
+        return self._int("COVER_TIMEOUT",
+                         ("timeout", "cover_seconds"), 300)
+
+    @property
+    def mainrepo_url(self) -> str:
+        return self._str("MAINREPO_URL",
+                         ("mainrepo", "url"), "http://localhost:8088")
 
     def as_dict(self) -> dict:
         return {
@@ -90,11 +95,11 @@ class Config:
             },
             "retry": {
                 "chapter_max_retries": self.chapter_max_retries,
-                "max_consecutive_fails": self.max_consecutive_fails,
             },
             "timeout": {
                 "phase1_seconds": self.phase1_timeout,
                 "chapter_seconds": self.chapter_timeout,
+                "cover_seconds": self.cover_timeout,
             },
         }
 

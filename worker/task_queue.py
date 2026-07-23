@@ -124,6 +124,9 @@ class TaskQueue:
                 result = execute_register(task.book_id, task.params)
             elif task.type == "write":
                 result = execute_write(task.book_id, task.params)
+            elif task.type == "generate_cover":
+                from services.cover_service import execute_generate_cover
+                result = execute_generate_cover(task.book_id, task.params)
             else:
                 self._update_task(task.task_id, status="failed", error=f"Unknown task type: {task.type}")
                 return True

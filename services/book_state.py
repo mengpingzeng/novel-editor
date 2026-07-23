@@ -19,7 +19,6 @@ BOOKS_DIR = os.path.join(ROOT_DIR, "workspace", "books")
 
 DEFAULT_RETRY_POLICY = {
     "chapter_max_retries": config.chapter_max_retries,
-    "max_consecutive_fails": config.max_consecutive_fails,
 }
 
 
@@ -59,6 +58,8 @@ def ensure_book_state(book_id: str) -> Dict[str, Any]:
     """Load existing book_state.json or create from file-system scan (migration)."""
     state = load_book_state(book_id)
     if state is not None:
+        _populate_volumes_from_god_eye(state, book_id)
+        save_book_state(book_id, state)
         return state
 
     book_dir = os.path.join(BOOKS_DIR, book_id)
@@ -225,35 +226,61 @@ def get_next_chapter(book_id: str) -> Optional[Dict[str, int]]:
     if state is None:
         return None
 
+    version = state.get("version", "v1")
     chapters = state.get("chapters", {})
     total = state.get("total_chapters")
 
     if not chapters:
-        return {"global_chapter": 1, "volume": 1}
+        start_ch = 1
+    else:
+        completed = {
+            int(k)
+            for k, v in chapters.items()
+            if v.get("status") == "completed"
+        }
+        if not completed:
+            start_ch = 1
+        else:
+            max_completed = max(completed)
+            if total and max_completed >= total:
+                return None
+            start_ch = max_completed + 1
 
-    completed = {
-        int(k)
-        for k, v in chapters.items()
-        if v.get("status") == "completed"
-    }
-
-    if not completed:
-        return {"global_chapter": 1, "volume": 1}
-
-    max_completed = max(completed)
-
-    if total and max_completed >= total:
-        return None
-
-    next_ch = max_completed + 1
+    ch_final = os.path.join(
+        BOOKS_DIR, book_id, "versions", version,
+        "02-正文", f"第{start_ch}章-终稿.md"
+    )
+    if os.path.exists(ch_final):
+        from datetime import datetime as _dt
+        ch_key = str(start_ch)
+        chapters[ch_key] = {
+            "global_chapter": start_ch,
+            "volume": 1,
+            "status": "completed",
+            "retries": 0,
+            "score": 0.0,
+            "word_count": _count_words(ch_final),
+            "title": ch_final.rsplit("/", 1)[-1].replace(".md", ""),
+            "completed_at": _dt.fromtimestamp(
+                os.path.getmtime(ch_final), tz=timezone.utc
+            ).isoformat(),
+        }
+        state["chapters"] = chapters
+        _populate_volumes_from_god_eye(state, book_id)
+        for vol in state.get("volumes", []):
+            if vol["ch_start"] <= start_ch <= vol["ch_end"]:
+                chapters[ch_key]["volume"] = vol["volume"]
+                break
+        save_book_state(book_id, state)
+        return get_next_chapter(book_id)
 
     volume = 1
     for vol in state.get("volumes", []):
-        if vol["ch_start"] <= next_ch <= vol["ch_end"]:
+        if vol["ch_start"] <= start_ch <= vol["ch_end"]:
             volume = vol["volume"]
             break
 
-    return {"global_chapter": next_ch, "volume": volume}
+    return {"global_chapter": start_ch, "volume": volume}
 
 
 def update_chapter(book_id: str, global_chapter: int, **kwargs):
@@ -319,6 +346,19 @@ def list_all_books() -> List[str]:
 
 
 def phase_ge(current: str, required: str) -> bool:
-    """Check if current phase is >= required phase."""
-    order = {"pending": 0, "phase1_done": 1, "phase2_done": 2, "phase3_done": 3, "done": 4}
-    return order.get(current, -1) >= order.get(required, 999)
+    """Check if current phase is >= required phase.
+    Supports intermediate phases (e.g. phase2_volume1_outline) written by agents.
+    """
+    return _phase_level(current) >= _phase_level(required)
+
+
+_PHASE_ORDER = {"pending": 0, "phase1_done": 1, "phase2_done": 2, "phase3_done": 3, "done": 4}
+
+
+def _phase_level(phase: str) -> int:
+    if phase in _PHASE_ORDER:
+        return _PHASE_ORDER[phase]
+    for prefix, level in [("phase3", 3), ("phase2", 2), ("phase1", 1)]:
+        if phase.startswith(prefix):
+            return level
+    return -1

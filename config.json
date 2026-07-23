@@ -11,12 +11,12 @@
   },
 
   "retry": {
-    "chapter_max_retries": 3,
-    "max_consecutive_fails": 3
+    "chapter_max_retries": 3
   },
 
   "timeout": {
     "phase1_seconds": 3600,
-    "chapter_seconds": 1800
+    "chapter_seconds": 1800,
+    "cover_seconds": 300
   }
 }

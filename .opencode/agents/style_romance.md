@@ -156,9 +156,10 @@ salt_architect 执行 19 条交叉规则校验。
 ### pleasure_rotation 赛道默认值
 
 ```json
-{ "pleasure_types_pool": ["信息差碾压", "身份打脸", "情感守护", "布局揭露", "逆境逆袭", "实力展示"],
+{ "pleasure_types_pool": ["信息差碾压", "身份打脸", "情感守护", "布局揭露", "逆境逆袭", "实力展示", "暧昧推拉", "情感突破", "默契互动", "身体对话"],
   "opening_rotation": ["身份打脸", "信息差碾压", "情感守护", "布局揭露", "逆境逆袭"] }
 ```
+
 
 ---
 
@@ -166,5 +167,16 @@ salt_architect 执行 19 条交叉规则校验。
 
 按 `style-design-rules` skill §四 输出格式生成完整 JSON，title/blurb 留空（由 facade_generator 后续填入），其余字段根据白皮书和本赛道默认值填充。
 额外包含 V4 新增字段：target_total_word_count、track_compatibility_declaration（如有）、volume_constraint_relaxation（如有）、_consistency_report。
+
+**角色名占位输出规则（v6 新增·层0.2 命名回填配套）**：
+- `character_mapping` 中主角名、配角名、公司名等角色/组织名称，输出为占位符格式：
+  - 女主名：`{女主名}`
+  - 男主名：`{男主名}`
+  - 公司名：`{公司名}`
+  - 城市名：`{城市名}`
+  - 其他角色名：`{角色名_原始值简称}`
+- `book_blurb` 模板中使用同名占位符
+- `parameter_variables` 中记录原始值（苏晚/陆砚/思创），供 facade_generator 参照
+- 该占位符将由 run_pipeline.sh 的命名回填脚本替换为 facade_generator 生成的名称
 
 禁止输出的内容：非 JSON 文本、不完整的 JSON、占位符 `___` 或 `...`（必须填入具体值）。

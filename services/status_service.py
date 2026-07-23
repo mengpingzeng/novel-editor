@@ -2,6 +2,7 @@
 Status service — read book and chapter information from file system and book_state.json.
 """
 
+import json
 import os
 import re
 from typing import Any, Dict, List, Optional
@@ -89,14 +90,17 @@ def get_chapter_content(book_id: str, global_chapter: int) -> Optional[Dict[str,
 
     ch_data = state.get("chapters", {}).get(str(global_chapter), {})
 
+    title = ch_data.get("title") or _extract_title(content)
     return {
         "global_chapter": global_chapter,
         "volume": ch_data.get("volume"),
-        "title": ch_data.get("title", _extract_title(content)),
+        "title": title,
         "content": content,
         "word_count": ch_data.get("word_count", len(re.sub(r"\s+", "", content))),
         "score": ch_data.get("score"),
         "status": ch_data.get("status"),
+        "draft": content,
+        "chapter_title": title,
     }
 
 
@@ -138,6 +142,49 @@ def get_chapter_list(book_id: str) -> Optional[Dict[str, Any]]:
         "total_volumes": state.get("total_volumes"),
         "total_chapters": state.get("total_chapters"),
         "volumes": vol_list,
+    }
+
+
+def get_book_metadata(book_id: str) -> Optional[Dict[str, Any]]:
+    state = load_book_state(book_id)
+    if state is None:
+        return None
+
+    version = state.get("version", "v1")
+    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
+    meta: Dict[str, Any] = {}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+        except Exception:
+            pass
+
+    chapters = state.get("chapters", {})
+    completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
+
+    chapter_names = meta.get("chapter_names", [])
+    if not chapter_names:
+        for k in sorted(chapters.keys(), key=int):
+            ch = chapters[k]
+            title = ch.get("title", "")
+            if title:
+                chapter_names.append(title)
+
+    titles = meta.get("title", [])
+    name = titles[0] if titles else None
+
+    return {
+        "book_id": book_id,
+        "name": name,
+        "titles": titles,
+        "description": meta.get("description"),
+        "genre": meta.get("genre"),
+        "protagonist": meta.get("protagonist"),
+        "chapter_names": chapter_names,
+        "chapters_completed": completed,
+        "total_chapters": state.get("total_chapters"),
+        "cover_image": meta.get("cover_image"),
     }
 
 

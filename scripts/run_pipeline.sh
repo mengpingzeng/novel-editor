@@ -64,6 +64,16 @@ success(){ echo -e "${GREEN}[$(date '+%H:%M:%S')] ✅ $1${NC}"; }
 warn()   { echo -e "${YELLOW}[$(date '+%H:%M:%S')] ⚠️  $1${NC}"; }
 fail()   { echo -e "${RED}[$(date '+%H:%M:%S')] ❌ $1${NC}"; }
 
+# ── 流水线共享日志（与 HTTP API utils/pipeline_logger.py 格式一致） ──
+pipeline_log() {
+    local book_id="$1" step="$2" msg="$3" level="${4:-INFO}"
+    local log_dir="$ROOT_DIR/workspace/books/$book_id"
+    mkdir -p "$log_dir" 2>/dev/null
+    local ts
+    ts=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$ts] [$level] [$step] $msg" >> "$log_dir/pipeline.log"
+}
+
 # ── 每书互斥锁（与 HTTP API 共享同一 lock 文件） ──
 BOOK_LOCK_FD=""
 acquire_book_lock() {
@@ -349,16 +359,98 @@ phase_ge() {
 # scope 文件 = workspace/.pipeline_scope.json（临时，仅含当前书）
 # 主 state = workspace/iteration-state.json（持久化，断点续跑用）
 # agent 完成后，从 scope 同步 phase/version 到主 state
+# 注册完成后自动生成封面图
+
+# ── 为单本书生成封面图 ──
+_generate_book_cover() {
+    local name="$1"
+    local book_dir="$2"
+
+    pipeline_log "$name" "register" "开始生成封面图"
+
+    local ver
+    ver=$(get_book_version "$name" "$book_dir")
+    local prompt_file="$book_dir/versions/$ver/00-素材/cover_prompt.json"
+
+    if [ ! -f "$prompt_file" ]; then
+        pipeline_log "$name" "register" "cover_prompt.json 不存在，跳过封面生成" "WARN"
+        warn "$name cover_prompt.json 不存在，跳过封面生成"
+        return 0
+    fi
+
+    local prompt
+    prompt=$(python3 -c "import json; print(json.load(open('$prompt_file')).get('prompt',''))")
+    if [ -z "$prompt" ]; then
+        pipeline_log "$name" "register" "prompt 为空，跳过封面生成" "WARN"
+        warn "$name cover prompt 为空，跳过封面生成"
+        return 0
+    fi
+
+    local publish_dir="$book_dir/versions/$ver/发布"
+    local cover_file="$publish_dir/cover.png"
+
+    if [ -f "$cover_file" ] && [ "$(stat -c%s "$cover_file" 2>/dev/null || echo 0)" -gt 10240 ]; then
+        pipeline_log "$name" "register" "封面图已存在，跳过"
+        return 0
+    fi
+
+    mkdir -p "$publish_dir"
+
+    if python3 "$SCRIPT_DIR/generate_cover.py" --prompt "$prompt" --output "$cover_file" 2>&1 | while IFS= read -r line; do
+        echo "        $line"
+    done; then
+        local metadata_file="$publish_dir/novel_metadata.json"
+        if [ -f "$metadata_file" ]; then
+            python3 -c "
+import json
+d=json.load(open('$metadata_file'))
+d['cover_image']='./cover.png'
+d['cover_generated_by']='gemini-3.1-flash-image-preview'
+d['cover_resolution']='3:4 (1K)'
+json.dump(d, open('$metadata_file','w'), ensure_ascii=False, indent=2)
+"
+        fi
+        pipeline_log "$name" "register" "封面图生成成功: $cover_file"
+        success "$name 封面图已生成"
+    else
+        pipeline_log "$name" "register" "封面图生成失败" "WARN"
+        warn "$name 封面图生成失败（不影响注册）"
+    fi
+}
+
+_write_writer_model() {
+    local name="$1"
+    local book_dir="$2"
+    local model="$3"
+    local config_path="$book_dir/opencode.json"
+
+    if [ ! -f "$config_path" ]; then
+        pipeline_log "$name" "register" "opencode.json 不存在，跳过模型写入" "WARN"
+        return 0
+    fi
+
+    python3 -c "
+import json
+c=json.load(open('$config_path'))
+c.setdefault('agent',{}).setdefault('content_writer',{})['model']='$model'
+json.dump(c, open('$config_path','w'), ensure_ascii=False, indent=2)
+" 2>/dev/null && pipeline_log "$name" "register" "写作模型已写入 opencode.json: $model"
+}
+
 run_phase1_for_book() {
     local name="$1"
     local platform="$2"
     local track="$3"
     local chapters="$4"
     local word_count_multiplier="${5:-1.0}"
+    local writer_model="${6:-tokenhub/glm-5.2}"
     local scope_file="$ROOT_DIR/workspace/.pipeline_scope.json"
+
+    pipeline_log "$name" "register" "开始注册: platform=$platform, track=$track, multiplier=$word_count_multiplier, model=$writer_model"
 
     if [ ! -f "$STATE_FILE" ]; then
         fail "状态文件不存在: $STATE_FILE"
+        pipeline_log "$name" "register" "状态文件不存在: $STATE_FILE" "ERROR"
         return 1
     fi
 
@@ -392,6 +484,8 @@ with open('$scope_file', 'w') as f:
 "
     log "Phase 1 scope 已创建: 仅含 $name"
 
+    pipeline_log "$name" "register" "scope 已创建，启动 agent"
+
     # 保存 scope 副本（agent 可能会删除 scope 文件）
     local scope_backup="${scope_file}.copy"
     cp "$scope_file" "$scope_backup"
@@ -399,8 +493,12 @@ with open('$scope_file', 'w') as f:
     cp "$STATE_FILE" "${STATE_FILE}.bak"
     cp "$scope_file" "$STATE_FILE"
 
+    local t_start
+    t_start=$(date +%s)
     run_phase "Phase 1 - $name" "/iterate step"
     local agent_rc=$?
+    local t_elapsed
+    t_elapsed=$(($(date +%s) - t_start))
 
     # ── 无论成功失败，先恢复 state 文件（防止 swap 残留） ──
     cp "${STATE_FILE}.bak" "$STATE_FILE"
@@ -409,15 +507,19 @@ with open('$scope_file', 'w') as f:
     # ── 超时：向上传播 124，触发流水线重启 ──
     if [ $agent_rc -eq 124 ]; then
         fail "$name Phase 1 agent 执行超时"
+        pipeline_log "$name" "register" "agent 超时 (elapsed=${t_elapsed}s)" "ERROR"
         rm -f "$scope_backup" "$scope_file"
         return 124
     fi
 
     if [ $agent_rc -ne 0 ]; then
         fail "$name Phase 1 agent 执行失败"
+        pipeline_log "$name" "register" "agent 失败 (exit=$agent_rc, elapsed=${t_elapsed}s)" "ERROR"
         rm -f "$scope_backup" "$scope_file"
         return 1
     fi
+
+    pipeline_log "$name" "register" "agent 执行完成 (exit=0, elapsed=${t_elapsed}s)，检查 book_state.json"
 
     # 从 scope 原文件读取 agent 写入的当前书 phase
     # 原文件已被 agent 在 Phase 1 执行期间更新（phase=pending → phase1_done）
@@ -464,7 +566,11 @@ with open('$STATE_FILE', 'w') as f:
 
     rm -f "$scope_backup" "$scope_file"
 
+    pipeline_log "$name" "register" "注册成功: phase=$final_phase"
     success "Phase 1 验证通过: $name phase=$final_phase"
+
+    _generate_book_cover "$name" "$ROOT_DIR/workspace/books/$name"
+    _write_writer_model "$name" "$ROOT_DIR/workspace/books/$name" "$writer_model"
 }
 
 # ── 从上帝之眼 00-全书命运总谱.md 解析全书卷结构 ──
@@ -658,6 +764,7 @@ run_book_pipeline() {
     local track="$3"
     local chapters="$4"
     local word_count_multiplier="${5:-1.0}"
+    local writer_model="${6:-tokenhub/glm-5.2}"
     local book_dir="$ROOT_DIR/workspace/books/$name"
     local reviewer_dir="$ROOT_DIR/workspace/reviewer"
 
@@ -674,7 +781,7 @@ run_book_pipeline() {
         warn "跳过 Phase 1: $name（phase=$phase）"
     else
         log "═══ Phase 1: 框架生成 ═══"
-        run_phase1_for_book "$name" "$platform" "$track" "$chapters" "$word_count_multiplier" || {
+        run_phase1_for_book "$name" "$platform" "$track" "$chapters" "$word_count_multiplier" "$writer_model" || {
             fail "$name Phase 1 失败"
             return 1
         }
@@ -986,7 +1093,7 @@ with open('$STATE_FILE') as f:
 chapters = s.get('target_chapters', 5)
 books = s.get('active_books', [])
 for b in books:
-    print(f'{b[\"name\"]}|{b.get(\"platform\",\"\")}|{b.get(\"track\",\"\")}|{b.get(\"word_count_multiplier\",1.0)}')
+    print(f'{b[\"name\"]}|{b.get(\"platform\",\"\")}|{b.get(\"track\",\"\")}|{b.get(\"word_count_multiplier\",1.0)}|{b.get(\"writer_model\",\"tokenhub/glm-5.2\")}')
 " 2>/dev/null)
     local chapters
     chapters=$(python3 -c "import json; s=json.load(open('$STATE_FILE')); print(s.get('target_chapters',5))")
@@ -1004,7 +1111,7 @@ for b in books:
     echo "============================================"
     echo ""
 
-    while IFS='|' read -r name platform track word_count_multiplier; do
+    while IFS='|' read -r name platform track word_count_multiplier writer_model; do
         [ -z "$name" ] && continue
         current=$((current + 1))
 
@@ -1015,7 +1122,7 @@ for b in books:
         log ">>> 第 $current/$book_count 本: $name (phase=$phase, version=$ver) <<<"
 
         local result
-        result=$(run_book_pipeline "$name" "$platform" "$track" "$chapters" "$word_count_multiplier")
+        result=$(run_book_pipeline "$name" "$platform" "$track" "$chapters" "$word_count_multiplier" "$writer_model")
         local rc=$?
 
         if [ $rc -eq 124 ]; then
@@ -1059,6 +1166,9 @@ for b in books:
         fail "失败: $failed_books"
     fi
     echo "============================================"
+
+    [ -n "$failed_books" ] && return 1
+    return 0
 }
 
 # ═══════════════════════════════════════════════════════
