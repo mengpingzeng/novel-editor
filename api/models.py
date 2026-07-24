@@ -126,3 +126,104 @@ class BookMetadataResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     details: Optional[str] = None
+
+
+# --- Catalog models ---
+
+
+class CatalogBook(BaseModel):
+    book_id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    genre: Optional[str] = None
+    cover_url: Optional[str] = None
+    phase: Optional[str] = None
+    version: Optional[str] = None
+    total_chapters: Optional[int] = None
+    chapters_completed: int = 0
+
+
+class CatalogListResponse(BaseModel):
+    books: List[CatalogBook]
+
+
+class CatalogAllItem(CatalogBook):
+    in_catalog: bool = False
+
+
+class CatalogAllResponse(BaseModel):
+    books: List[CatalogAllItem]
+
+
+class CatalogModifyRequest(BaseModel):
+    book_ids: List[str] = Field(..., min_length=1)
+
+
+class CatalogModifyResult(BaseModel):
+    book_id: str
+    status: str
+    error: Optional[str] = None
+
+
+class CatalogModifyResponse(BaseModel):
+    results: List[CatalogModifyResult]
+    summary: dict
+
+
+# --- Admin registration models ---
+
+
+class RegisterAvailableItem(BaseModel):
+    book_id: str
+    repo_exists: bool = True
+
+
+class RegisterAvailableResponse(BaseModel):
+    books: List[RegisterAvailableItem]
+
+
+class RegisterSubmitRequest(BaseModel):
+    book_ids: List[str] = Field(..., min_length=1)
+    platform: str = Field(default="番茄小说", description="目标平台")
+    track: str = Field(default="auto", description="赛道")
+    word_count_multiplier: float = Field(default=1.0, ge=0.5, le=5.0)
+    writer_model: str = Field(default="tokenhub/glm-5.2")
+
+
+class RegisterSubmitResult(BaseModel):
+    book_id: str
+    task_id: Optional[str] = None
+    status: str
+    error: Optional[str] = None
+
+
+class RegisterSubmitResponse(BaseModel):
+    results: List[RegisterSubmitResult]
+    summary: dict
+
+
+class RegisterQueueItem(BaseModel):
+    task_id: str
+    book_id: str
+    status: str
+    queue_position: int
+    error: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    platform: Optional[str] = None
+    track: Optional[str] = None
+
+
+class RegisterQueueResponse(BaseModel):
+    tasks: List[RegisterQueueItem]
+    is_paused: bool = False
+
+
+class RegisterActionRequest(BaseModel):
+    task_id: str = Field(..., description="任务ID")
+
+
+class RegisterActionResponse(BaseModel):
+    task_id: str
+    status: str
+    message: Optional[str] = None

@@ -31,7 +31,7 @@ def get_book_status(book_id: str) -> Optional[Dict[str, Any]]:
     next_ch = get_next_chapter(book_id)
 
     return {
-        "book_id": state.get("book_id"),
+        "book_id": book_id,
         "phase": state.get("phase"),
         "version": state.get("version"),
         "total_volumes": state.get("total_volumes"),
@@ -52,7 +52,7 @@ def get_book_summary(book_id: str) -> Optional[Dict[str, Any]]:
     chapters = state.get("chapters", {})
     completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
     return {
-        "book_id": state.get("book_id"),
+        "book_id": book_id,
         "phase": state.get("phase"),
         "version": state.get("version"),
         "total_chapters": state.get("total_chapters"),
@@ -164,12 +164,18 @@ def get_book_metadata(book_id: str) -> Optional[Dict[str, Any]]:
     completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
 
     chapter_names = meta.get("chapter_names", [])
-    if not chapter_names:
+    if len(chapter_names) < completed:
         for k in sorted(chapters.keys(), key=int):
+            if len(chapter_names) >= int(k):
+                continue
             ch = chapters[k]
             title = ch.get("title", "")
-            if title:
+            if title and title not in chapter_names:
+                if _is_default_title(title, int(k)):
+                    title = "第{}章".format(k)
                 chapter_names.append(title)
+        while len(chapter_names) < completed:
+            chapter_names.append("")
 
     titles = meta.get("title", [])
     name = titles[0] if titles else None
@@ -194,3 +200,11 @@ def _extract_title(content: str) -> str:
         if line.startswith("# "):
             return line[2:].strip()
     return ""
+
+def _is_default_title(title, chapter_num):
+    # type: (str, int) -> bool
+    if not title:
+        return False
+    return title in ("第{}章-初稿".format(chapter_num),
+                     "第{}章-终稿".format(chapter_num),
+                     "第{}章-第{}章".format(chapter_num, chapter_num))

@@ -5,6 +5,7 @@ Task queue with global concurrency control and per-book lock enforcement.
 - Worker pool with configurable max concurrent books
 - Per-book flock lock (BookLock) ensures no two workers write the same book
 - Task status tracking: queued → running → completed/failed
+- Register tasks are serialized (max 1 at a time) and pause queue on failure
 """
 
 import os
@@ -42,6 +43,9 @@ class TaskQueue:
         self._tasks: Dict[str, Task] = {}
         self._tasks_lock = threading.Lock()
         self._semaphore = threading.BoundedSemaphore(max_concurrent)
+        self._register_semaphore = threading.BoundedSemaphore(1)
+        self._register_paused = threading.Event()
+        self._register_paused.clear()
         self._workers: List[threading.Thread] = []
         self._running = False
         self._shutdown_event = threading.Event()
@@ -123,6 +127,7 @@ class TaskQueue:
             if task.type == "register":
                 result = execute_register(task.book_id, task.params)
             elif task.type == "write":
+                task.params["task_id"] = task.task_id
                 result = execute_write(task.book_id, task.params)
             elif task.type == "generate_cover":
                 from services.cover_service import execute_generate_cover
@@ -159,21 +164,124 @@ class TaskQueue:
             except Empty:
                 continue
 
-            if not self._shutdown_event.is_set():
-                acquired = self._semaphore.acquire(blocking=True, timeout=600)
-                if not acquired:
-                    self._queue.put(task)
-                    continue
+            if self._shutdown_event.is_set():
+                self._queue.task_done()
+                continue
 
-                try:
-                    success = self._try_execute_with_lock(task)
-                    if not success:
-                        time.sleep(2)
-                        self._queue.put(task)
-                finally:
-                    self._semaphore.release()
+            if task.type == "register":
+                self._process_register_task(task)
+            else:
+                self._process_general_task(task)
 
+    def _process_register_task(self, task: Task):
+        acquired = self._register_semaphore.acquire(blocking=False)
+        if not acquired:
+            self._queue.put(task)
             self._queue.task_done()
+            return
+
+        try:
+            if self._register_paused.is_set():
+                self._queue.put(task)
+                return
+
+            success = self._try_execute_with_lock(task)
+            if not success:
+                time.sleep(2)
+                self._queue.put(task)
+            else:
+                with self._tasks_lock:
+                    t = self._tasks.get(task.task_id)
+                if t and t.status == "failed":
+                    self._register_paused.set()
+        finally:
+            self._register_semaphore.release()
+            self._queue.task_done()
+
+    def _process_general_task(self, task: Task):
+        acquired = self._semaphore.acquire(blocking=True, timeout=600)
+        if not acquired:
+            self._queue.put(task)
+            self._queue.task_done()
+            return
+
+        try:
+            success = self._try_execute_with_lock(task)
+            if not success:
+                time.sleep(2)
+                self._queue.put(task)
+        finally:
+            self._semaphore.release()
+            self._queue.task_done()
+
+    def pause_register_queue(self):
+        self._register_paused.set()
+
+    def resume_register_queue(self):
+        self._register_paused.clear()
+
+    def is_register_paused(self) -> bool:
+        return self._register_paused.is_set()
+
+    def list_register_tasks(self) -> List[Dict[str, Any]]:
+        with self._tasks_lock:
+            register_tasks = [t for t in self._tasks.values() if t.type == "register"]
+        result = []
+        for t in register_tasks:
+            result.append({
+                "task_id": t.task_id,
+                "book_id": t.book_id,
+                "status": t.status,
+                "queue_position": self._get_position(t.task_id),
+                "error": t.error,
+                "created_at": t.created_at,
+                "updated_at": t.updated_at,
+                "platform": t.params.get("platform", ""),
+                "track": t.params.get("track", ""),
+            })
+        return result
+
+    def retry_register_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        with self._tasks_lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.type != "register":
+                return None
+            if task.status not in ("failed",):
+                return {
+                    "task_id": task_id,
+                    "status": task.status,
+                    "message": "Task is not in failed state, cannot retry",
+                }
+            task.status = "queued"
+            task.error = None
+            task.result = None
+            task.updated_at = datetime.now(timezone.utc).isoformat()
+        self._queue.put(task)
+        if self._register_paused.is_set():
+            self._register_paused.clear()
+        return {
+            "task_id": task_id,
+            "status": "queued",
+            "message": "Task re-queued for retry",
+        }
+
+    def remove_register_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        with self._tasks_lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.type != "register":
+                return None
+            if task.status == "running":
+                return {
+                    "task_id": task_id,
+                    "status": "running",
+                    "message": "Task is currently running, cannot remove",
+                }
+            del self._tasks[task_id]
+        return {
+            "task_id": task_id,
+            "status": "removed",
+            "message": "Task removed from queue",
+        }
 
 
 # Module-level singleton for the API server

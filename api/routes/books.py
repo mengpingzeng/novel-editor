@@ -12,6 +12,8 @@ from api.models import (
     BookListResponse,
     BookStatusResponse,
     BookMetadataResponse,
+    CatalogListResponse,
+    CatalogBook,
     ErrorResponse,
 )
 from services.register_service import register_book
@@ -22,6 +24,7 @@ from services.status_service import (
     get_book_metadata,
     list_all_summaries,
 )
+from services.catalog_service import get_catalog_books
 
 router = APIRouter(prefix="/api/v1/books", tags=["books"])
 
@@ -61,6 +64,12 @@ def write(req: WriteRequest):
 def list_books():
     summaries = list_all_summaries()
     return BookListResponse(books=summaries)
+
+
+@router.get("/catalog", response_model=CatalogListResponse)
+def list_catalog():
+    books = get_catalog_books()
+    return CatalogListResponse(books=[CatalogBook(**b) for b in books])
 
 
 @router.get("/status", response_model=BookStatusResponse,

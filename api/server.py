@@ -13,6 +13,7 @@ import sys
 import time
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -50,7 +51,7 @@ _h11_readers.READERS[(_h11_readers.CLIENT, _h11_readers.IDLE)] = _patched_maybe_
 from config import config
 from api.models import HealthResponse, ErrorResponse
 from api.middleware import setup_cors, RequestLoggingMiddleware
-from api.routes import books, tasks, chapters
+from api.routes import books, tasks, chapters, admin_catalog, admin_register
 from worker.task_queue import task_queue
 
 app = FastAPI(
@@ -65,12 +66,20 @@ app.add_middleware(RequestLoggingMiddleware)
 app.include_router(books.router)
 app.include_router(tasks.router)
 app.include_router(chapters.router)
+app.include_router(admin_catalog.router)
+app.include_router(admin_register.router)
+
+admin_web_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "admin_web")
+if os.path.isdir(admin_web_dir):
+    app.mount("/admin", StaticFiles(directory=admin_web_dir, html=True), name="admin")
 
 
 @app.on_event("startup")
 def on_startup():
+    from services.db import init_db
+    init_db()
     task_queue.start(num_workers=2)
-    print("[API] Task queue started")
+    print("[API] DB initialized, task queue started")
 
 
 @app.on_event("shutdown")

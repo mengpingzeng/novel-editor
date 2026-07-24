@@ -219,7 +219,59 @@ def cmd_record_input(args):
     })
 
     save_json(path, data)
-    print(f"[OK] 记录 {stage} 第{chapter}章输入大小: {total_bytes} bytes")
+    print("[OK] 记录 {} 第{}章输入大小: {} bytes".format(stage, chapter, total_bytes))
+
+
+def cmd_repair_chapters(args):
+    """修复 chapter_names：从 book_state.json 补齐缺失章节名"""
+    import os as _os
+    import re as _re
+
+    path = args.path
+    meta = load_json(path)
+    if not meta:
+        print("[FAIL] novel_metadata.json 不存在: {}".format(path), file=sys.stderr)
+        sys.exit(1)
+
+    book_id = args.book_id
+    books_dir = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+        "workspace", "books"
+    )
+    state_path = _os.path.join(books_dir, book_id, "book_state.json")
+    if not _os.path.exists(state_path):
+        print("[FAIL] book_state.json 不存在: {}".format(state_path), file=sys.stderr)
+        sys.exit(1)
+
+    with open(state_path, "r", encoding="utf-8") as f:
+        state = json.load(f)
+
+    chapters = state.get("chapters", {})
+    existing_names = list(meta.get("chapter_names", []))
+    added = 0
+
+    for k in sorted(chapters.keys(), key=int):
+        idx = int(k) - 1
+        if idx < len(existing_names) and existing_names[idx]:
+            continue
+        ch = chapters[k]
+        title = ch.get("title", "")
+        if not title:
+            continue
+        while len(existing_names) <= idx:
+            existing_names.append("")
+        existing_names[idx] = title
+        added += 1
+        print("  [修复] 第{}章: {}".format(k, title))
+
+    if added == 0:
+        print("  无需修复，chapter_names 已完整")
+        return
+
+    meta["chapter_names"] = existing_names
+    meta["chapters_completed"] = sum(1 for v in chapters.values() if v.get("status") == "completed")
+    save_json(path, meta)
+    print("[OK] 已修复 {} 个章节名，当前共 {} 章（完成 {} 章）".format(added, len(existing_names), meta["chapters_completed"]))
 
 
 def main():
@@ -268,6 +320,11 @@ def main():
     p_record.add_argument("--bytes", required=True, type=int, help="输入文件总字节数")
     p_record.add_argument("--input-files", default=None, help="输入文件列表，逗号分隔")
 
+    # repair-chapters
+    p_repair = subparsers.add_parser("repair-chapters", help="从 book_state.json 补齐缺失章节名")
+    p_repair.add_argument("--path", required=True, help="novel_metadata.json 路径")
+    p_repair.add_argument("--book-id", required=True, help="书名（book_id）")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -282,6 +339,8 @@ def main():
         cmd_check_name(args)
     elif args.command == "record-input":
         cmd_record_input(args)
+    elif args.command == "repair-chapters":
+        cmd_repair_chapters(args)
 
 
 if __name__ == "__main__":

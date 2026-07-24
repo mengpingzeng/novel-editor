@@ -36,8 +36,53 @@ def write_chapters(book_id: str, chapters: int = 1) -> str:
     })
 
 
+def _repair_metadata_chapter_names(book_id, version, state):
+    chapters = state.get("chapters", {})
+    completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
+    if completed == 0:
+        return
+
+    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
+    if not os.path.exists(meta_path):
+        return
+
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception:
+        return
+
+    existing = list(meta.get("chapter_names", []))
+    if len(existing) >= completed:
+        return
+
+    for k in sorted(chapters.keys(), key=int):
+        idx = int(k) - 1
+        if idx < len(existing) and existing[idx]:
+            continue
+        ch = chapters[k]
+        title = ch.get("title", "")
+        if not title:
+            continue
+        while len(existing) <= idx:
+            existing.append("")
+        existing[idx] = title
+
+    while len(existing) < completed:
+        existing.append("")
+
+    meta["chapter_names"] = existing
+    meta["chapters_completed"] = completed
+    try:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def execute_write(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
     chapters_to_write = params.get("chapters", 1)
+    task_id = params.get("task_id")
 
     state = ensure_book_state(book_id)
     if state is None:
@@ -50,6 +95,8 @@ def execute_write(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
     book_dir = os.path.join(BOOKS_DIR, book_id)
     version = state.get("version", "v1")
+
+    _repair_metadata_chapter_names(book_id, version, state)
 
     written = 0
     written_chapters = []
@@ -92,6 +139,14 @@ def execute_write(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         chapter_ok = False
 
         while retries < max_retries:
+            if task_id:
+                from worker.task_queue import task_queue
+                task_queue._update_task(task_id, result={
+                    "chapter": global_chapter,
+                    "attempt": retries + 1,
+                    "max_attempts": max_retries,
+                    "phase": "writing",
+                })
             try:
                 result = subprocess.run(
                     ["timeout", str(config.chapter_timeout),
