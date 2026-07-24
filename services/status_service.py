@@ -17,6 +17,56 @@ from services.book_state import (
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def normalize_chapter_names(raw, completed_count=0):
+    # type: (Any, int) -> List[str]
+    """Normalize chapter_names to a plain list[str], regardless of input format.
+
+    Supported formats:
+      - dict  {'1': '宫门初入', '2': '深宫晚棠'}
+      - list  ['测灵仪式', '残图之争']
+      - list[dict]  [{'chapter':1,'title':'灰色石印'}]
+      - None / empty / invalid → empty slots
+    """
+    result = []
+
+    if isinstance(raw, dict):
+        for idx in range(completed_count):
+            key = str(idx + 1)
+            val = raw.get(key, "")
+            if val and not isinstance(val, str):
+                val = str(val)
+            result.append(val or "")
+    elif isinstance(raw, list):
+        for idx in range(max(completed_count, len(raw))):
+            entry = raw[idx] if idx < len(raw) else None
+            if isinstance(entry, dict):
+                title = entry.get("title", "")
+                if title and not isinstance(title, str):
+                    title = str(title)
+                result.append(title)
+            elif isinstance(entry, str):
+                result.append(entry)
+            else:
+                result.append("")
+    else:
+        result = [""] * completed_count
+
+    while len(result) < completed_count:
+        result.append("")
+
+    return result
+
+
+_DEFAULT_TITLE_RE = re.compile(r"^第\d+章[-_]?(初稿|终稿)(-v\d+)?$")
+
+
+def _is_default_title(title):
+    # type: (str) -> bool
+    if not title:
+        return True
+    return bool(_DEFAULT_TITLE_RE.match(title.strip()))
+
+
 def get_book_status(book_id: str) -> Optional[Dict[str, Any]]:
     state = load_book_state(book_id)
     if state is None:
@@ -112,17 +162,42 @@ def get_chapter_list(book_id: str) -> Optional[Dict[str, Any]]:
     version = state.get("version", "v1")
     draft_dir = os.path.join(BOOKS_DIR, book_id, "versions", version, "02-正文")
 
-    volumes = {}
     chapters = state.get("chapters", {})
+    completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
 
+    chapter_names = []  # type: List[str]
+    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            chapter_names = normalize_chapter_names(meta.get("chapter_names", []), completed)
+        except Exception:
+            pass
+
+    volumes = {}
     for key, ch_data in chapters.items():
         ch_num = int(key)
         vol_num = ch_data.get("volume", 1)
+        raw_title = ch_data.get("title", "")
+        if _is_default_title(raw_title):
+            idx = ch_num - 1
+            if idx < len(chapter_names) and chapter_names[idx]:
+                raw_title = chapter_names[idx]
+            else:
+                raw_title = "第{}章".format(ch_num)
+        elif not raw_title:
+            idx = ch_num - 1
+            if idx < len(chapter_names) and chapter_names[idx]:
+                raw_title = chapter_names[idx]
+            else:
+                raw_title = "第{}章".format(ch_num)
+
         if vol_num not in volumes:
             volumes[vol_num] = []
         volumes[vol_num].append({
             "global_chapter": ch_num,
-            "title": ch_data.get("title", f"第{ch_num}章"),
+            "title": raw_title,
             "status": ch_data.get("status"),
             "word_count": ch_data.get("word_count"),
             "score": ch_data.get("score"),
@@ -163,22 +238,11 @@ def get_book_metadata(book_id: str) -> Optional[Dict[str, Any]]:
     chapters = state.get("chapters", {})
     completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
 
-    chapter_names = meta.get("chapter_names", [])
-    if len(chapter_names) < completed:
-        for k in sorted(chapters.keys(), key=int):
-            if len(chapter_names) >= int(k):
-                continue
-            ch = chapters[k]
-            title = ch.get("title", "")
-            if title and title not in chapter_names:
-                if _is_default_title(title, int(k)):
-                    title = "第{}章".format(k)
-                chapter_names.append(title)
-        while len(chapter_names) < completed:
-            chapter_names.append("")
-
     titles = meta.get("title", [])
     name = titles[0] if titles else None
+
+    raw_names = meta.get("chapter_names", [])
+    chapter_names = normalize_chapter_names(raw_names, completed)
 
     return {
         "book_id": book_id,
@@ -200,11 +264,3 @@ def _extract_title(content: str) -> str:
         if line.startswith("# "):
             return line[2:].strip()
     return ""
-
-def _is_default_title(title, chapter_num):
-    # type: (str, int) -> bool
-    if not title:
-        return False
-    return title in ("第{}章-初稿".format(chapter_num),
-                     "第{}章-终稿".format(chapter_num),
-                     "第{}章-第{}章".format(chapter_num, chapter_num))

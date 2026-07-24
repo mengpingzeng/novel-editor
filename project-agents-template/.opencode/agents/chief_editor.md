@@ -456,18 +456,45 @@ LOOP（本轮稿 = 第{N}章-初稿-v{retry+1}.md）：
 
 ### 3d. 记录章节名
 
-使用 Python 脚本：
+使用 Python 脚本写入，并自检验证（最多重试 3 次）：
 ```bash
-python scripts/novel_metadata.py add-chapter --path "versions/{version}/发布/novel_metadata.json" --name "{章节标题}"
+CHAPTER_TITLE="{章节标题}"
+SUCCESS=0
+for TRY in 1 2 3; do
+  python scripts/novel_metadata.py add-chapter --path "versions/{version}/发布/novel_metadata.json" --name "$CHAPTER_TITLE"
+
+  # 自检：验证 chapter_names 格式和内容
+  python3 -c "
+import json
+meta = json.load(open('versions/{version}/发布/novel_metadata.json'))
+cn = meta.get('chapter_names', [])
+assert isinstance(cn, list), 'chapter_names is not list: ' + str(type(cn))
+assert len(cn) >= {N}, f'chapter_names has only {{len(cn)}} entries, need {N}'
+title = cn[{N}-1]
+assert title and title.strip(), 'chapter_names[{N}-1] is empty'
+assert title != '第{N}章-终稿' and title != '第{N}章-初稿', f'chapter_names[{N}-1] still default: {{title}}'
+print(f'✅ chapter_names[{N}-1] = {{title}}')
+"
+  if [ $? -eq 0 ]; then
+    SUCCESS=1
+    break
+  fi
+  echo "❌ chapter_names 自检失败(第${TRY}次)，重试中..."
+done
+
+if [ $SUCCESS -ne 1 ]; then
+  echo "⛔ chapter_names 自检3次均失败，降级继续（请手动修复 novel_metadata.json）"
+fi
 ```
 追加日志：`| {now} | 记录章名 | novel_metadata.py | Python 脚本 | ✅(第{N}章: {章节标题}) |`
 
 ### 3d5. book_state.json 同步（v3 新增·强制执行）
 
-每章终稿确认后，同步更新 book_state.json 中的章节状态：
-
+每章终稿确认后，同步更新 book_state.json 中的章节状态（带自检重试）：
 ```bash
-python3 -c "
+SUCCESS=0
+for TRY in 1 2 3; do
+  python3 -c "
 import json, os, re, datetime
 sp = os.path.join(os.getcwd(), 'book_state.json')
 if not os.path.exists(sp):
@@ -489,6 +516,29 @@ if os.path.exists(dp):
 json.dump(s, open(sp, 'w'), ensure_ascii=False, indent=2)
 print(f'✅ book_state.json updated: Ch{N} completed')
 "
+
+  # 自检：验证写入内容
+  python3 -c "
+import json
+bs = json.load(open('book_state.json'))
+ch = bs.setdefault('chapters', {}).get('{N}', {})
+assert ch.get('status') == 'completed', f'Ch{N} status is not completed'
+title = ch.get('title', '')
+assert title and title.strip(), f'Ch{N} title is empty'
+assert title != '第{N}章-终稿' and title != '第{N}章-初稿', f'Ch{N} title still default: {{title}}'
+print(f'✅ book_state.json Ch{N} verified: title={{title}}')
+" 2>/dev/null
+
+  if [ $? -eq 0 ]; then
+    SUCCESS=1
+    break
+  fi
+  echo "❌ book_state.json 自检失败(第${TRY}次)，重试中..."
+done
+
+if [ $SUCCESS -ne 1 ]; then
+  echo "⛔ book_state.json 自检3次均失败，降级继续"
+fi
 ```
 
 追加日志：`| {now} | 状态同步 | book_state.json | Python 脚本 | ✅(第{N}章完成, {best_score}分, {字数}字) |`

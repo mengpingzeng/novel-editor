@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from config import config
+from services.status_service import normalize_chapter_names, _is_default_title
 from services.book_state import (
     load_book_state,
     ensure_book_state,
@@ -52,26 +53,21 @@ def _repair_metadata_chapter_names(book_id, version, state):
     except Exception:
         return
 
-    existing = list(meta.get("chapter_names", []))
-    if len(existing) >= completed:
-        return
+    raw_names = meta.get("chapter_names", [])
+    normalized = normalize_chapter_names(raw_names, completed)
 
     for k in sorted(chapters.keys(), key=int):
         idx = int(k) - 1
-        if idx < len(existing) and existing[idx]:
+        if idx < len(normalized) and normalized[idx]:
             continue
-        ch = chapters[k]
+        ch = chapters.get(k, {})
         title = ch.get("title", "")
-        if not title:
-            continue
-        while len(existing) <= idx:
-            existing.append("")
-        existing[idx] = title
+        if title and not _is_default_title(title):
+            while len(normalized) <= idx:
+                normalized.append("")
+            normalized[idx] = title
 
-    while len(existing) < completed:
-        existing.append("")
-
-    meta["chapter_names"] = existing
+    meta["chapter_names"] = normalized
     meta["chapters_completed"] = completed
     try:
         with open(meta_path, "w", encoding="utf-8") as f:

@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from config import config
 from utils.lock import BookLock
+from utils.pipeline_logger import log_step
 
 
 @dataclass
@@ -46,6 +47,8 @@ class TaskQueue:
         self._register_semaphore = threading.BoundedSemaphore(1)
         self._register_paused = threading.Event()
         self._register_paused.clear()
+        self._retry_task = None  # type: Optional[Task]
+        self._retry_lock = threading.Lock()
         self._workers: List[threading.Thread] = []
         self._running = False
         self._shutdown_event = threading.Event()
@@ -159,6 +162,19 @@ class TaskQueue:
 
     def _worker_loop(self):
         while self._running:
+            retry_task = None
+            with self._retry_lock:
+                if self._retry_task is not None:
+                    retry_task = self._retry_task
+                    self._retry_task = None
+
+            if retry_task is not None:
+                if retry_task.type == "register":
+                    self._process_register_task(retry_task)
+                else:
+                    self._process_general_task(retry_task)
+                continue
+
             try:
                 task = self._queue.get(timeout=2)
             except Empty:
@@ -193,7 +209,19 @@ class TaskQueue:
                 with self._tasks_lock:
                     t = self._tasks.get(task.task_id)
                 if t and t.status == "failed":
-                    self._register_paused.set()
+                    retry_count = t.params.get("_register_retry_count", 0)
+                    if retry_count < 1:
+                        t.params["_register_retry_count"] = retry_count + 1
+                        t.status = "queued"
+                        t.error = None
+                        t.result = None
+                        self._queue.put(task)
+                        log_step(task.book_id, "register",
+                                 "首次注册失败，自动重试 (1/1)")
+                    else:
+                        self._register_paused.set()
+                        log_step(task.book_id, "register",
+                                 "注册失败已达重试上限，队列暂停")
         finally:
             self._register_semaphore.release()
             self._queue.task_done()
@@ -255,14 +283,16 @@ class TaskQueue:
             task.status = "queued"
             task.error = None
             task.result = None
+            task.params["_register_retry_count"] = task.params.get("_register_retry_count", 0) + 1
             task.updated_at = datetime.now(timezone.utc).isoformat()
-        self._queue.put(task)
+        with self._retry_lock:
+            self._retry_task = task
         if self._register_paused.is_set():
             self._register_paused.clear()
         return {
             "task_id": task_id,
             "status": "queued",
-            "message": "Task re-queued for retry",
+            "message": "Task re-queued for retry (priority)",
         }
 
     def remove_register_task(self, task_id: str) -> Optional[Dict[str, Any]]:

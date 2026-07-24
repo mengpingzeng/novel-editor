@@ -133,8 +133,6 @@ def execute_register(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
         _try_generate_cover(book_id)
 
-        _notify_mainrepo(book_id, platform)
-
         return {"success": True, "book_id": book_id, "phase": book_state["phase"]}
 
     except FileNotFoundError:
