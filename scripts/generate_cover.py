@@ -2,6 +2,7 @@
 """封面生成脚本：调用 ToAPIs Gemini 3.1 Flash Image 生成小说封面"""
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -9,14 +10,15 @@ from pathlib import Path
 
 import requests
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import config
+
 
 class CoverError(Exception):
     """封面生成异常"""
     pass
 
 
-API_KEY = "sk-T0PSDm03ivBdFZxhxEXah7Huvg63ckNojgd8g91384BhwN8d"
-API_BASE = "https://toapis.com"
 MODEL = "gemini-3.1-flash-image-preview"
 SIZE = "3:4"
 RESOLUTION = "1K"
@@ -24,12 +26,19 @@ POLL_INTERVAL = 5
 POLL_INTERVAL_MAX = 10
 MAX_WAIT = 180
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json",
-    "User-Agent": "novel-editor/1.0",
-})
+_SESSION = None
+
+
+def _get_session():
+    global _SESSION
+    if _SESSION is None:
+        _SESSION = requests.Session()
+        _SESSION.headers.update({
+            "Authorization": f"Bearer {config.cover_api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "novel-editor/1.0",
+        })
+    return _SESSION
 
 
 def submit_task(prompt):
@@ -43,7 +52,7 @@ def submit_task(prompt):
             "personGeneration": "ALLOW_ADULT",
         },
     }
-    resp = SESSION.post(f"{API_BASE}/v1/images/generations", json=body)
+    resp = _get_session().post(f"{config.cover_base_url}/v1/images/generations", json=body)
     if resp.status_code != 200:
         raise CoverError(f"提交任务失败 ({resp.status_code}): {resp.text}")
     result = resp.json()
@@ -56,7 +65,7 @@ def submit_task(prompt):
 def poll_task(task_id):
     start = time.time()
     while time.time() - start < MAX_WAIT:
-        resp = SESSION.get(f"{API_BASE}/v1/images/generations/{task_id}")
+        resp = _get_session().get(f"{config.cover_base_url}/v1/images/generations/{task_id}")
         if resp.status_code != 200:
             raise CoverError(f"查询任务失败 ({resp.status_code}): {resp.text}")
         result = resp.json()

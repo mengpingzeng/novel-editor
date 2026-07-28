@@ -20,6 +20,14 @@ from typing import Any, Dict, List
 
 # ── 名称验证 ──────────────────────────────────────────────
 
+_DEFAULT_TITLE_RE = re.compile(r"^第\d+章[-_]?(初稿|终稿)(-v\d+)?$")
+
+def _is_default_title(name: str) -> bool:
+    if not name:
+        return True
+    return bool(_DEFAULT_TITLE_RE.match(name.strip()))
+
+
 def has_special_chars(name: str) -> bool:
     """检测是否包含特殊符号（中英文标点、空格以外的一切特殊字符）。
     允许：中文、英文、数字、中文标点、英文标点（.,!?;:等）、空格
@@ -141,6 +149,11 @@ def cmd_add_chapter(args):
 
     data = load_json(path)
 
+    # 默认标题检查（拒绝"第N章-终稿"等占位标题）
+    if _is_default_title(chapter_name):
+        print(f"[FAIL] 章节名「{chapter_name}」是默认占位标题，不允许写入", file=sys.stderr)
+        sys.exit(1)
+
     # 特殊符号检查
     errors = validate_names([chapter_name], "章节名")
     if errors:
@@ -257,6 +270,8 @@ def cmd_repair_chapters(args):
         ch = chapters[k]
         title = ch.get("title", "")
         if not title:
+            continue
+        if _is_default_title(title):
             continue
         while len(existing_names) <= idx:
             existing_names.append("")

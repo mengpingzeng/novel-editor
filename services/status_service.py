@@ -1,5 +1,7 @@
 """
-Status service — read book and chapter information from file system and book_state.json.
+Status service — v5 纯净版
+
+从 checkpoints 读取章节和书籍信息。无向后兼容，无读时兜底。
 """
 
 import json
@@ -9,62 +11,38 @@ from typing import Any, Dict, List, Optional
 
 from services.book_state import (
     load_book_state,
-    ensure_book_state,
     list_all_books,
+    get_next_chapter,
+    verify_dict,
+    _SIG_FIELD,
     BOOKS_DIR,
 )
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-
-def normalize_chapter_names(raw, completed_count=0):
-    # type: (Any, int) -> List[str]
-    """Normalize chapter_names to a plain list[str], regardless of input format.
-
-    Supported formats:
-      - dict  {'1': '宫门初入', '2': '深宫晚棠'}
-      - list  ['测灵仪式', '残图之争']
-      - list[dict]  [{'chapter':1,'title':'灰色石印'}]
-      - None / empty / invalid → empty slots
-    """
-    result = []
-
-    if isinstance(raw, dict):
-        for idx in range(completed_count):
-            key = str(idx + 1)
-            val = raw.get(key, "")
-            if val and not isinstance(val, str):
-                val = str(val)
-            result.append(val or "")
-    elif isinstance(raw, list):
-        for idx in range(max(completed_count, len(raw))):
-            entry = raw[idx] if idx < len(raw) else None
-            if isinstance(entry, dict):
-                title = entry.get("title", "")
-                if title and not isinstance(title, str):
-                    title = str(title)
-                result.append(title)
-            elif isinstance(entry, str):
-                result.append(entry)
-            else:
-                result.append("")
-    else:
-        result = [""] * completed_count
-
-    while len(result) < completed_count:
-        result.append("")
-
-    return result
-
-
 _DEFAULT_TITLE_RE = re.compile(r"^第\d+章[-_]?(初稿|终稿)(-v\d+)?$")
 
 
-def _is_default_title(title):
-    # type: (str) -> bool
+def _is_default_title(title: str) -> bool:
+    """判断是否为默认占位标题（第N章-终稿 / 第N章-初稿）"""
     if not title:
         return True
     return bool(_DEFAULT_TITLE_RE.match(title.strip()))
+
+
+def _load_metadata_verified(book_id: str, version: str) -> Optional[Dict[str, Any]]:
+    """加载 novel_metadata.json，验 HMAC 签名。无效文件视为不存在。"""
+    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
+    if not os.path.exists(meta_path):
+        return None
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception:
+        return None
+    if not verify_dict(meta):
+        return None
+    return meta
 
 
 def get_book_status(book_id: str) -> Optional[Dict[str, Any]]:
@@ -72,12 +50,7 @@ def get_book_status(book_id: str) -> Optional[Dict[str, Any]]:
     if state is None:
         return None
 
-    chapters = state.get("chapters", {})
-    completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
-    scores = [v.get("score", 0) for v in chapters.values()
-              if v.get("status") == "completed" and v.get("score")]
-
-    from services.book_state import get_next_chapter
+    finalized = _count_finalized(state)
     next_ch = get_next_chapter(book_id)
 
     return {
@@ -86,27 +59,41 @@ def get_book_status(book_id: str) -> Optional[Dict[str, Any]]:
         "version": state.get("version"),
         "total_volumes": state.get("total_volumes"),
         "total_chapters": state.get("total_chapters"),
-        "chapters_completed": completed,
-        "is_completed": state.get("total_chapters") is not None and completed >= state.get("total_chapters", 0),
+        "chapters_completed": finalized,
+        "is_completed": state.get("total_chapters") is not None
+                        and finalized >= state.get("total_chapters", 0),
         "next_chapter": next_ch,
-        "quality_avg": round(sum(scores) / len(scores), 1) if scores else 0.0,
+        "quality_avg": state.get("quality_avg", 0.0),
         "created_at": state.get("created_at"),
         "updated_at": state.get("updated_at"),
     }
+
+
+def _count_finalized(state: dict) -> int:
+    ck = state.get("checkpoints", {}).get("phase2", {})
+    count = 0
+    if isinstance(ck, dict):
+        for vol_data in ck.values():
+            if not isinstance(vol_data, dict):
+                continue
+            chapters = vol_data.get("chapters", {})
+            if isinstance(chapters, dict):
+                for ch_data in chapters.values():
+                    if isinstance(ch_data, dict) and ch_data.get("finalized", {}).get("status") == "done":
+                        count += 1
+    return count
 
 
 def get_book_summary(book_id: str) -> Optional[Dict[str, Any]]:
     state = load_book_state(book_id)
     if state is None:
         return None
-    chapters = state.get("chapters", {})
-    completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
     return {
         "book_id": book_id,
         "phase": state.get("phase"),
         "version": state.get("version"),
         "total_chapters": state.get("total_chapters"),
-        "chapters_completed": completed,
+        "chapters_completed": _count_finalized(state),
     }
 
 
@@ -125,33 +112,83 @@ def get_chapter_content(book_id: str, global_chapter: int) -> Optional[Dict[str,
         return None
 
     version = state.get("version", "v1")
-    draft_dir = os.path.join(BOOKS_DIR, book_id, "versions", version, "02-正文")
-    fname = f"第{global_chapter}章-终稿.md"
-    path = os.path.join(draft_dir, fname)
-
-    if not os.path.exists(path):
+    draft_path = os.path.join(BOOKS_DIR, book_id, "versions", version,
+                               "02-正文", f"第{global_chapter}章-终稿.md")
+    if not os.path.exists(draft_path):
         return None
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(draft_path, "r", encoding="utf-8") as f:
             content = f.read()
     except Exception:
         return None
 
-    ch_data = state.get("chapters", {}).get(str(global_chapter), {})
+    title = _find_chapter_title_from_checkpoints(state, global_chapter)
+    if not title:
+        title = _find_chapter_title_from_metadata(book_id, version, global_chapter)
+    if not title:
+        title = f"第{global_chapter}章"
 
-    title = ch_data.get("title") or _extract_title(content)
+    score = _find_chapter_score(state, global_chapter)
+    word_count = len(re.sub(r"\s+", "", content))
+    volume = _find_chapter_volume(state, global_chapter)
+
     return {
         "global_chapter": global_chapter,
-        "volume": ch_data.get("volume"),
+        "volume": volume,
         "title": title,
         "content": content,
-        "word_count": ch_data.get("word_count", len(re.sub(r"\s+", "", content))),
-        "score": ch_data.get("score"),
-        "status": ch_data.get("status"),
+        "word_count": word_count,
+        "score": score,
+        "status": "completed",
         "draft": content,
         "chapter_title": title,
     }
+
+
+def _find_chapter_volume(state: dict, chapter: int) -> Optional[int]:
+    for vol in state.get("volumes", []):
+        if vol.get("ch_start", 0) <= chapter <= vol.get("ch_end", 0):
+            return vol.get("volume")
+    return None
+
+
+def _find_chapter_title_from_checkpoints(state: dict, chapter: int) -> Optional[str]:
+    ck = state.get("checkpoints", {}).get("phase2", {})
+    if isinstance(ck, dict):
+        for vol_data in ck.values():
+            if not isinstance(vol_data, dict):
+                continue
+            ch_data = vol_data.get("chapters", {}).get(str(chapter), {})
+            if isinstance(ch_data, dict):
+                fin = ch_data.get("finalized", {})
+                if isinstance(fin, dict) and fin.get("title"):
+                    return fin["title"]
+    return None
+
+
+def _find_chapter_score(state: dict, chapter: int) -> Optional[float]:
+    ck = state.get("checkpoints", {}).get("phase2", {})
+    if isinstance(ck, dict):
+        for vol_data in ck.values():
+            if not isinstance(vol_data, dict):
+                continue
+            ch_data = vol_data.get("chapters", {}).get(str(chapter), {})
+            if isinstance(ch_data, dict):
+                fin = ch_data.get("finalized", {})
+                if isinstance(fin, dict):
+                    return fin.get("score")
+    return None
+
+
+def _find_chapter_title_from_metadata(book_id: str, version: str, chapter: int) -> Optional[str]:
+    meta = _load_metadata_verified(book_id, version)
+    if meta is None:
+        return None
+    names = meta.get("chapter_names", [])
+    if isinstance(names, list) and chapter - 1 < len(names):
+        return names[chapter - 1]
+    return None
 
 
 def get_chapter_list(book_id: str) -> Optional[Dict[str, Any]]:
@@ -160,64 +197,75 @@ def get_chapter_list(book_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     version = state.get("version", "v1")
-    draft_dir = os.path.join(BOOKS_DIR, book_id, "versions", version, "02-正文")
-
-    chapters = state.get("chapters", {})
-    completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
-
-    chapter_names = []  # type: List[str]
-    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
-    if os.path.exists(meta_path):
-        try:
-            with open(meta_path, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-            chapter_names = normalize_chapter_names(meta.get("chapter_names", []), completed)
-        except Exception:
-            pass
-
-    volumes = {}
-    for key, ch_data in chapters.items():
-        ch_num = int(key)
-        vol_num = ch_data.get("volume", 1)
-        raw_title = ch_data.get("title", "")
-        if _is_default_title(raw_title):
-            idx = ch_num - 1
-            if idx < len(chapter_names) and chapter_names[idx]:
-                raw_title = chapter_names[idx]
-            else:
-                raw_title = "第{}章".format(ch_num)
-        elif not raw_title:
-            idx = ch_num - 1
-            if idx < len(chapter_names) and chapter_names[idx]:
-                raw_title = chapter_names[idx]
-            else:
-                raw_title = "第{}章".format(ch_num)
-
-        if vol_num not in volumes:
-            volumes[vol_num] = []
-        volumes[vol_num].append({
-            "global_chapter": ch_num,
-            "title": raw_title,
-            "status": ch_data.get("status"),
-            "word_count": ch_data.get("word_count"),
-            "score": ch_data.get("score"),
-        })
-
-    vol_list = []
-    for vol_num in sorted(volumes.keys()):
-        volumes[vol_num].sort(key=lambda c: c["global_chapter"])
-        vol_list.append({
-            "volume": vol_num,
-            "chapters": volumes[vol_num],
-        })
+    chapter_names = _load_chapter_names(book_id, version)
+    volumes = _build_volumes_from_checkpoints(state, chapter_names)
 
     return {
         "book_id": book_id,
         "version": version,
         "total_volumes": state.get("total_volumes"),
         "total_chapters": state.get("total_chapters"),
-        "volumes": vol_list,
+        "volumes": volumes,
     }
+
+
+def _build_volumes_from_checkpoints(state: dict, chapter_names: list) -> List[Dict]:
+    ck = state.get("checkpoints", {}).get("phase2", {})
+    state_volumes = state.get("volumes", [])
+    version = state.get("version", "v1")
+    book_id = state.get("book_id", "")
+
+    volumes = {}
+    for vol in state_volumes:
+        vol_num = vol["volume"]
+        vol_key = f"volume_{vol_num}"
+        vol_data = ck.get(vol_key, {}) if isinstance(ck, dict) else {}
+        ch_dict = vol_data.get("chapters", {}) if isinstance(vol_data, dict) else {}
+
+        for ch_num in range(vol.get("ch_start", 1), vol.get("ch_end", 0) + 1):
+            ch_key = str(ch_num)
+            ch_entry = ch_dict.get(ch_key, {}) if isinstance(ch_dict, dict) else {}
+            fin = ch_entry.get("finalized", {}) if isinstance(ch_entry, dict) else {}
+            is_done = isinstance(fin, dict) and fin.get("status") == "done"
+
+            if not is_done:
+                draft_path = os.path.join(BOOKS_DIR, book_id, "versions", version,
+                                          "02-正文", f"第{ch_num}章-终稿.md")
+                if not os.path.exists(draft_path):
+                    continue
+                is_done = True
+
+            title = (fin.get("title") if isinstance(fin, dict) else None) or ""
+            if not title or _is_default_title(title):
+                idx = ch_num - 1
+                if idx < len(chapter_names) and chapter_names[idx]:
+                    title = chapter_names[idx]
+                else:
+                    title = f"第{ch_num}章"
+
+            if vol_num not in volumes:
+                volumes[vol_num] = []
+            volumes[vol_num].append({
+                "global_chapter": ch_num,
+                "title": title,
+                "status": "completed",
+                "word_count": (fin.get("word_count") if isinstance(fin, dict) else None),
+                "score": (fin.get("score") if isinstance(fin, dict) else None),
+            })
+
+    vol_list = []
+    for vol_num in sorted(volumes.keys()):
+        volumes[vol_num].sort(key=lambda c: c["global_chapter"])
+        vol_list.append({"volume": vol_num, "chapters": volumes[vol_num]})
+    return vol_list
+
+
+def _load_chapter_names(book_id: str, version: str) -> List[str]:
+    meta = _load_metadata_verified(book_id, version)
+    if meta is None:
+        return []
+    names = meta.get("chapter_names", [])
+    return names if isinstance(names, list) else []
 
 
 def get_book_metadata(book_id: str) -> Optional[Dict[str, Any]]:
@@ -226,41 +274,21 @@ def get_book_metadata(book_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     version = state.get("version", "v1")
-    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
-    meta: Dict[str, Any] = {}
-    if os.path.exists(meta_path):
-        try:
-            with open(meta_path, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-        except Exception:
-            pass
-
-    chapters = state.get("chapters", {})
-    completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
-
+    meta = _load_metadata_verified(book_id, version) or {}
     titles = meta.get("title", [])
     name = titles[0] if titles else None
-
-    raw_names = meta.get("chapter_names", [])
-    chapter_names = normalize_chapter_names(raw_names, completed)
+    chapter_names = _load_chapter_names(book_id, version)
 
     return {
         "book_id": book_id,
         "name": name,
         "titles": titles,
+        "source_title": meta.get("source", {}).get("title", book_id),
         "description": meta.get("description"),
         "genre": meta.get("genre"),
         "protagonist": meta.get("protagonist"),
         "chapter_names": chapter_names,
-        "chapters_completed": completed,
+        "chapters_completed": _count_finalized(state),
         "total_chapters": state.get("total_chapters"),
         "cover_image": meta.get("cover_image"),
     }
-
-
-def _extract_title(content: str) -> str:
-    for line in content.split("\n"):
-        line = line.strip()
-        if line.startswith("# "):
-            return line[2:].strip()
-    return ""

@@ -1,6 +1,7 @@
-"""Chapter routes — content, listing and covers."""
+"""Chapter routes — content, listing, covers, and state sync."""
 
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse

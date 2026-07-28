@@ -20,9 +20,11 @@ from config import config
 from services.book_state import (
     ensure_book_state,
     load_book_state,
-    set_book_phase,
+    try_set_phase,
     phase_ge,
+    PHASE1_STEP_ORDER,
 )
+from services.log_service import get_logger
 from utils.pipeline_logger import log_step
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -65,7 +67,6 @@ def execute_register(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
     scope, _main_state = _prepare_scope(book_id, platform, track, word_count_multiplier)
     if scope is None:
         log_step(book_id, "register", "已注册，跳过")
-        set_book_phase(book_id, "phase1_done")
         return {"success": True, "book_id": book_id, "phase": "phase1_done",
                 "message": "Already registered"}
 
@@ -131,7 +132,12 @@ def execute_register(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         log_step(book_id, "register", f"注册成功: phase={book_state['phase']}")
         _finalize_register(book_id, writer_model)
 
-        _try_generate_cover(book_id)
+        _verify_phase1_checkpoints(book_id)
+        ok, reason = try_set_phase(book_id, "phase1_done")
+        if ok:
+            log_step(book_id, "register", "Phase 1 全部 checkpoint 验证通过")
+        else:
+            log_step(book_id, "register", f"Phase 1 checkpoint 验证未通过: {reason}", "WARN")
 
         return {"success": True, "book_id": book_id, "phase": book_state["phase"]}
 
@@ -226,6 +232,18 @@ def _finalize_register(book_id: str, writer_model: str = "tokenhub/glm-5.2"):
     _cleanup_iteration_state(book_id)
 
 
+def _verify_phase1_checkpoints(book_id: str):
+    """验证 Phase 1 所有 checkpoint 是否已完成"""
+    from services.book_state import get_checkpoint
+    logger = get_logger(book_id)
+    for step in PHASE1_STEP_ORDER:
+        node = get_checkpoint(book_id, ["phase1", step])
+        if node and node.get("status") == "done":
+            logger.info("[P1]", f"  checkpoint {step}: ✅ done")
+        else:
+            logger.warn("[P1]", f"  checkpoint {step}: ⚠️ not done (agent may have missed it)")
+
+
 def _write_writer_model(book_id: str, model: str):
     book_dir = os.path.join(ROOT_DIR, "workspace", "books", book_id)
     config_path = os.path.join(book_dir, "opencode.json")
@@ -238,24 +256,6 @@ def _write_writer_model(book_id: str, model: str):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
         f.write("\n")
     log_step(book_id, "register", f"写作模型已写入 opencode.json: {model}")
-
-
-def _try_generate_cover(book_id: str):
-    try:
-        from services.cover_service import execute_generate_cover
-        log_step(book_id, "register", "开始生成封面图")
-        result = execute_generate_cover(book_id, {"version": None, "force": False})
-        if result.get("success"):
-            if result.get("skipped"):
-                log_step(book_id, "register", "封面图已存在，跳过")
-            else:
-                log_step(book_id, "register",
-                         f"封面图生成成功: {result.get('cover_path', '')}")
-        else:
-            log_step(book_id, "register",
-                     f"封面图生成失败: {result.get('error', 'unknown')}", "WARN")
-    except Exception as e:
-        log_step(book_id, "register", f"封面图生成异常: {e}", "WARN")
 
 
 def _cleanup_iteration_state(book_id: str):

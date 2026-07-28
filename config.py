@@ -80,6 +80,16 @@ class Config:
                          ("timeout", "cover_seconds"), 300)
 
     @property
+    def cover_api_key(self) -> str:
+        return self._str("COVER_API_KEY",
+                         ("cover", "api_key"), "")
+
+    @property
+    def cover_base_url(self) -> str:
+        return self._str("COVER_BASE_URL",
+                         ("cover", "base_url"), "https://toapis.com")
+
+    @property
     def mainrepo_url(self) -> str:
         return self._str("MAINREPO_URL",
                          ("mainrepo", "url"), "http://localhost:8088")
@@ -100,6 +110,13 @@ class Config:
                 "phase1_seconds": self.phase1_timeout,
                 "chapter_seconds": self.chapter_timeout,
                 "cover_seconds": self.cover_timeout,
+            },
+            "cover": {
+                "api_key": "***" if self.cover_api_key else "",
+                "base_url": self.cover_base_url,
+            },
+            "mainrepo": {
+                "url": self.mainrepo_url,
             },
         }
 

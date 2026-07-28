@@ -2,7 +2,8 @@ import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from services.book_state import load_book_state, list_all_books, phase_ge, BOOKS_DIR
+from services.book_state import load_book_state, list_all_books, phase_ge, verify_dict, _SIG_FIELD, BOOKS_DIR
+from services.status_service import _count_finalized, _load_metadata_verified
 from services.db import catalog_list_ids, catalog_contains
 
 
@@ -49,24 +50,17 @@ def _enrich_book(book_id):
         return None
 
     version = state.get("version", "v1")
-    chapters = state.get("chapters", {})
-    completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
-
-    meta = {}  # type: Dict[str, Any]
-    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
-    if os.path.exists(meta_path):
-        try:
-            with open(meta_path, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-        except Exception:
-            pass
+    completed = _count_finalized(state)
+    meta = _load_metadata_verified(book_id, version) or {}
 
     titles = meta.get("title", [])
     name = titles[0] if titles else None
+    source_title = meta.get("source", {}).get("title", book_id)
 
     return {
         "book_id": book_id,
         "name": name,
+        "source_title": source_title,
         "description": meta.get("description"),
         "genre": meta.get("genre"),
         "cover_url": "/v1/books/cover?book_id={}".format(book_id),
@@ -103,24 +97,18 @@ def get_catalog_all(book_id_filter=None):
             continue
 
         version = state.get("version", "v1")
-        meta = {}  # type: Dict[str, Any]
-        meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
-        if os.path.exists(meta_path):
-            try:
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-            except Exception:
-                pass
-
+        meta = _load_metadata_verified(book_id, version) or {}
         titles = meta.get("title", [])
         name = titles[0] if titles else None
+        source_title = meta.get("source", {}).get("title", book_id)
 
-        chapters = state.get("chapters", {})
-        completed = sum(1 for v in chapters.values() if v.get("status") == "completed")
+        completed = _count_finalized(state)
 
         results.append({
             "book_id": book_id,
             "name": name,
+            "source_title": source_title,
+            "description": meta.get("description"),
             "genre": meta.get("genre"),
             "cover_url": "/v1/books/cover?book_id={}".format(book_id),
             "phase": state.get("phase"),
@@ -128,6 +116,7 @@ def get_catalog_all(book_id_filter=None):
             "total_chapters": state.get("total_chapters"),
             "chapters_completed": completed,
             "in_catalog": book_id in in_catalog_set,
+            "track": state.get("track"),
         })
 
     return results

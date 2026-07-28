@@ -190,6 +190,13 @@ class TaskQueue:
                 self._process_general_task(task)
 
     def _process_register_task(self, task: Task):
+        # 任务可能已被 remove_register_task 从跟踪表中删除（含 retry 后被删除的竞态），
+        # 若已不在 self._tasks 中则跳过执行，避免出现「隐形 running 任务」长期占用信号量。
+        with self._tasks_lock:
+            if task.task_id not in self._tasks:
+                self._queue.task_done()
+                return
+
         acquired = self._register_semaphore.acquire(blocking=False)
         if not acquired:
             self._queue.put(task)
@@ -227,6 +234,12 @@ class TaskQueue:
             self._queue.task_done()
 
     def _process_general_task(self, task: Task):
+        # 同 _process_register_task，避免执行已被删除的任务。
+        with self._tasks_lock:
+            if task.task_id not in self._tasks:
+                self._queue.task_done()
+                return
+
         acquired = self._semaphore.acquire(blocking=True, timeout=600)
         if not acquired:
             self._queue.put(task)
@@ -307,6 +320,11 @@ class TaskQueue:
                     "message": "Task is currently running, cannot remove",
                 }
             del self._tasks[task_id]
+        # 若该任务已被 retry 标记为优先重试，撤销重试标记，
+        # 否则 worker 仍会执行这个已删除的任务，造成「隐形 running 任务」占用信号量。
+        with self._retry_lock:
+            if self._retry_task is not None and self._retry_task.task_id == task_id:
+                self._retry_task = None
         return {
             "task_id": task_id,
             "status": "removed",

@@ -134,6 +134,7 @@ class ErrorResponse(BaseModel):
 class CatalogBook(BaseModel):
     book_id: str
     name: Optional[str] = None
+    source_title: Optional[str] = None
     description: Optional[str] = None
     genre: Optional[str] = None
     cover_url: Optional[str] = None
@@ -141,6 +142,8 @@ class CatalogBook(BaseModel):
     version: Optional[str] = None
     total_chapters: Optional[int] = None
     chapters_completed: int = 0
+    tags: List[str] = Field(default_factory=list)
+    track: Optional[str] = None
 
 
 class CatalogListResponse(BaseModel):
@@ -227,3 +230,129 @@ class RegisterActionResponse(BaseModel):
     task_id: str
     status: str
     message: Optional[str] = None
+
+
+class RegisterUploadResponse(BaseModel):
+    book_id: str
+    path: str
+    bytes: int
+    overwritten: bool
+
+
+class RegisterRemoveSourceRequest(BaseModel):
+    book_id: str = Field(..., description="书名，对应 workspace/repo 下的目录")
+
+
+class RegisterRemoveSourceResponse(BaseModel):
+    book_id: str
+    removed: bool
+
+
+class ChapterSyncRequest(BaseModel):
+    book_id: str = Field(..., description="书名")
+    chapter: int = Field(..., ge=1, description="章节号")
+    volume: int = Field(default=1, ge=1, description="卷号")
+    status: str = Field(default="completed", description="章节状态")
+    score: float = Field(default=0.0, ge=0.0, le=100.0, description="质量评分")
+    title: str = Field(default="", description="章节标题")
+
+
+class ChapterSyncResponse(BaseModel):
+    status: str
+    book_id: str
+    chapter: int
+
+
+class BookStateInitRequest(BaseModel):
+    book_id: str = Field(..., description="书名")
+    platform: str = Field(default="", description="目标平台")
+    track: str = Field(default="", description="风格赛道")
+    version: str = Field(default="v1", description="版本号")
+    phase: str = Field(default="phase1_done", description="当前阶段")
+
+
+class BookStateInitResponse(BaseModel):
+    status: str
+    book_id: str
+    phase: str
+
+
+# ── v5 Checkpoint 模型 ─────────────────────────────────────
+
+class CheckpointSetRequest(BaseModel):
+    book_id: str = Field(..., description="书名")
+    path: Optional[List[str]] = Field(default=None, description="checkpoint 路径数组")
+    status: str = Field(default="done", description="done | failed | pending")
+    path_suffix: Optional[str] = Field(default=None, description="产物文件相对路径")
+    score: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    word_count: Optional[int] = Field(default=None, ge=0)
+    title: Optional[str] = Field(default=None)
+    volume: Optional[int] = Field(default=None, ge=1)
+    chapter: Optional[int] = Field(default=None, ge=1)
+
+
+class CheckpointResponse(BaseModel):
+    status: str
+    book_id: str
+    checkpoint_path: List[str]
+    checkpoint_status: str
+
+
+class CheckpointGetResponse(BaseModel):
+    book_id: str
+    checkpoint: Optional[Dict[str, Any]]
+
+
+class NextActionResponse(BaseModel):
+    book_id: str
+    phase: str
+    step: Optional[str]
+    volume: Optional[int] = None
+    chapter: Optional[int] = None
+    status: Optional[str] = None
+    version: Optional[str] = None
+    artifact_path: Optional[str] = None
+
+
+class PhaseVerifyRequest(BaseModel):
+    book_id: str = Field(..., description="书名")
+    target_phase: str = Field(..., description="目标 phase 值")
+
+
+class PhaseVerifyResponse(BaseModel):
+    book_id: str
+    can_set: bool
+    reason: str
+
+
+class NovelMetadataCreateRequest(BaseModel):
+    book_id: str = Field(..., description="书名")
+    title: List[str] = Field(..., min_length=5, description="候选书名，至少 5 个")
+    genre: str = Field(..., min_length=1, description="分类标签")
+    protagonist: str = Field(..., min_length=1, description="主角名")
+    description: str = Field(..., min_length=1, description="简介（必填）")
+    cover_prompt: str = Field(..., min_length=1, description="封面生图 prompt（必填）")
+    word_count_target: int = Field(..., ge=1, description="目标字数（必填）")
+    total_chapters: int = Field(..., ge=1, description="目标章数（必填）")
+    shadow_intensity: float = Field(default=0.5, ge=0.0, le=1.0)
+    setting: str = Field(default="")
+    source_title: str = Field(default="")
+    source_author: str = Field(default="")
+
+
+class NovelMetadataResponse(BaseModel):
+    book_id: str
+    path: str
+
+
+class PipelineTemplateResponse(BaseModel):
+    pipeline_name: str
+    version: str
+    phases: Dict[str, Any]
+
+
+class BookProgressResponse(BaseModel):
+    book_id: str
+    phase: str
+    checkpoints: Dict[str, Any]
+    next_action: Optional[NextActionResponse]

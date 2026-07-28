@@ -16,6 +16,7 @@ import sys
 from typing import Any, Dict, Optional
 
 from config import config
+from services.book_state import sign_dict, _SIG_FIELD
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOOKS_DIR = os.path.join(ROOT_DIR, "workspace", "books")
@@ -110,9 +111,11 @@ def _update_metadata(publish_dir: str):
     with open(metadata_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    data.pop(_SIG_FIELD, None)
     data["cover_image"] = "./cover.png"
     data["cover_generated_by"] = "gemini-3.1-flash-image-preview"
     data["cover_resolution"] = "3:4 (1K)"
+    data[_SIG_FIELD] = sign_dict(data)
 
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

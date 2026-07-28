@@ -51,13 +51,13 @@ _h11_readers.READERS[(_h11_readers.CLIENT, _h11_readers.IDLE)] = _patched_maybe_
 from config import config
 from api.models import HealthResponse, ErrorResponse
 from api.middleware import setup_cors, RequestLoggingMiddleware
-from api.routes import books, tasks, chapters, admin_catalog, admin_register
+from api.routes import books, tasks, chapters, admin_catalog, admin_register, checkpoints
 from worker.task_queue import task_queue
 
 app = FastAPI(
     title="novel-editor API",
     description="Novel generation pipeline as a service",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 setup_cors(app)
@@ -66,6 +66,7 @@ app.add_middleware(RequestLoggingMiddleware)
 app.include_router(books.router)
 app.include_router(tasks.router)
 app.include_router(chapters.router)
+app.include_router(checkpoints.router)
 app.include_router(admin_catalog.router)
 app.include_router(admin_register.router)
 
@@ -78,6 +79,10 @@ if os.path.isdir(admin_web_dir):
 def on_startup():
     from services.db import init_db
     init_db()
+
+    from services.log_service import print_template_summary
+    print_template_summary()
+
     task_queue.start(num_workers=2)
     print("[API] DB initialized, task queue started")
 
@@ -148,8 +153,9 @@ def kill_port(port: int) -> bool:
 def main():
     import uvicorn
     port = config.server_port
-    if kill_port(port):
-        print(f"[API] Killed existing process on port {port}")
+    if not os.environ.get("SKIP_KILL_PORT"):
+        if kill_port(port):
+            print(f"[API] Killed existing process on port {port}")
     uvicorn.run("api.server:app",
                 host=config.server_host,
                 port=port,

@@ -18,5 +18,10 @@
     "phase1_seconds": 3600,
     "chapter_seconds": 1800,
     "cover_seconds": 300
+  },
+
+  "cover": {
+    "api_key": "sk-T0PSDm03ivBdFZxhxEXah7Huvg63ckNojgd8g91384BhwN8d",
+    "base_url": "https://toapis.com"
   }
 }
