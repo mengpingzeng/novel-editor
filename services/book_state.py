@@ -61,6 +61,7 @@ def verify_dict(data: dict) -> bool:
 PHASE1_STEP_ORDER = [
     "version_decided", "whitepaper", "platform_rules", "style_mapped",
     "facade", "salt", "cover_prompt", "master_outline",
+    "diff_constraints",
     "novel_metadata", "cover_generated", "agents_copied",
 ]
 
@@ -451,16 +452,17 @@ def find_next_action(book_id: str) -> Dict[str, Any]:
     ck = state.get("checkpoints", {})
 
     # Phase 1
-    p1 = ck.get("phase1", {})
-    for step in PHASE1_STEP_ORDER:
-        node = p1.get(step, {})
-        if node.get("status") != "done":
-            path = node.get("path", "")
-            return {
-                "phase": "phase1", "step": step, "status": node.get("status", "pending"),
-                "book_id": book_id, "version": state.get("version", "v1"),
-                "artifact_path": path,
-            }
+    if not phase_ge(current_phase, "phase1_done"):
+        p1 = ck.get("phase1", {})
+        for step in PHASE1_STEP_ORDER:
+            node = p1.get(step, {})
+            if node.get("status") != "done":
+                path = node.get("path", "")
+                return {
+                    "phase": "phase1", "step": step, "status": node.get("status", "pending"),
+                    "book_id": book_id, "version": state.get("version", "v1"),
+                    "artifact_path": path,
+                }
 
     # Phase 1 done 标志
     p1_done = ck.get("phase1", {}).get("phase1_done", {})
@@ -501,8 +503,10 @@ def find_next_action(book_id: str) -> Dict[str, Any]:
             if not ch_data:
                 ch_data = {}
                 vol_data.setdefault("chapters", {})[ch_key] = ch_data
+            elif isinstance(ch_data, dict) and ch_data.get("finalized", {}).get("status") == "done":
+                continue
 
-            for ch_step in ["outline", "draft", "compliance", "quality", "finalized", "chapter_name"]:
+            for ch_step in ["outline", "draft", "finalized", "chapter_name"]:
                 node = ch_data.get(ch_step, {})
                 if node.get("status") != "done":
                     return {
@@ -633,7 +637,7 @@ def get_next_chapter(book_id: str) -> Optional[Dict[str, Any]]:
     
     Returns:
         None 或 {"global_chapter": int, "volume": int, "resume_step": str}
-        resume_step 为第一个 pending 子步骤名: outline/draft/compliance/quality/finalized/chapter_name
+        resume_step 为第一个 pending 子步骤名: outline/draft/finalized/chapter_name
     """
     state = load_book_state(book_id)
     if state is None:
@@ -642,7 +646,7 @@ def get_next_chapter(book_id: str) -> Optional[Dict[str, Any]]:
     p2 = state.get("checkpoints", {}).get("phase2", {})
     volumes = state.get("volumes", [])
 
-    CHAPTER_STEPS = ["outline", "draft", "compliance", "quality", "finalized", "chapter_name"]
+    CHAPTER_STEPS = ["outline", "draft", "finalized", "chapter_name"]
 
     for vol in volumes:
         vol_num = vol["volume"]
@@ -655,10 +659,7 @@ def get_next_chapter(book_id: str) -> Optional[Dict[str, Any]]:
             if not ch_data:
                 return {"global_chapter": ch_num, "volume": vol_num, "resume_step": "outline"}
 
-            fin_done = ch_data.get("finalized", {}).get("status") == "done"
-            cn_done = ch_data.get("chapter_name", {}).get("status") == "done"
-
-            if fin_done and cn_done:
+            if ch_data.get("finalized", {}).get("status") == "done":
                 continue
 
             for step in CHAPTER_STEPS:

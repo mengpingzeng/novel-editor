@@ -121,27 +121,53 @@ def execute_write(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
                     universal_newlines=True,
                 )
 
-                ch_final = os.path.join(
-                    book_dir, "versions", version,
-                    "02-正文", f"第{global_chapter}章-终稿.md")
+                ver_dir = os.path.join(book_dir, "versions", version)
+                ch_final = os.path.join(ver_dir, "02-正文", f"第{global_chapter}章-终稿.md")
 
-                if result.returncode == 0 and os.path.exists(ch_final):
-                    word_count = _count_words(ch_final)
-                    title = _resolve_chapter_title(ch_final, book_dir, version, global_chapter)
-                    # 用 gen 文件内容同步更新终稿 # 首行
-                    gen_title = _get_fallback_title(book_dir, version, global_chapter)
-                    if gen_title:
-                        _sync_title_to_draft(ch_final, book_dir, version, global_chapter, gen_title)
-                    set_checkpoint(book_id,
-                                   ["phase2", vol_key, "chapters", ch_key, "finalized"],
-                                   status="done", word_count=word_count, title=title)
-                    _sync_chapter_name_to_metadata(book_id, version, global_chapter, title)
-                    logger.done(f"[P2:v{volume}:ch{global_chapter}:fin]",
-                                f"终稿确认 ({word_count}字, {title})")
-                    written += 1
-                    written_chapters.append({"global_chapter": global_chapter, "volume": volume})
-                    chapter_ok = True
-                    break
+                if result.returncode == 0:
+                    ckp = ["phase2", vol_key, "chapters", ch_key]
+
+                    # agent 执行完毕后，由 pipeline 自行检查产物文件并落盘所有 checkpoint
+                    ch_outline = os.path.join(ver_dir, "01-大纲", f"第{global_chapter}章章纲.md")
+                    if os.path.exists(ch_outline):
+                        set_checkpoint(book_id, ckp + ["outline"], status="done")
+
+                    ch_draft = os.path.join(ver_dir, "02-正文", f"第{global_chapter}章-初稿-v1.md")
+                    if os.path.exists(ch_draft):
+                        set_checkpoint(book_id, ckp + ["draft"], status="done")
+
+                    compliance_dir = os.path.join(ver_dir, "03-纪要")
+                    if os.path.isdir(compliance_dir):
+                        for fname in os.listdir(compliance_dir):
+                            if fname.startswith(f"第{global_chapter}章合规审查-"):
+                                set_checkpoint(book_id, ckp + ["compliance"], status="done")
+                                break
+
+                    review_path = os.path.join(ver_dir, "03-纪要", f"第{global_chapter}章纪要.md")
+                    if os.path.exists(review_path):
+                        set_checkpoint(book_id, ckp + ["quality"], status="done")
+
+                    if os.path.exists(ch_final):
+                        word_count = _count_words(ch_final)
+                        title = _resolve_chapter_title(ch_final, book_dir, version, global_chapter)
+                        gen_title = _get_fallback_title(book_dir, version, global_chapter)
+                        if gen_title:
+                            _sync_title_to_draft(ch_final, book_dir, version, global_chapter, gen_title)
+                        set_checkpoint(book_id, ckp + ["finalized"],
+                                       status="done", word_count=word_count, title=title)
+                        set_checkpoint(book_id, ckp + ["chapter_name"],
+                                       status="done", title=title)
+                        _sync_chapter_name_to_metadata(book_id, version, global_chapter, title)
+                        logger.done(f"[P2:v{volume}:ch{global_chapter}:fin]",
+                                    f"终稿确认 ({word_count}字, {title})")
+                        written += 1
+                        written_chapters.append({"global_chapter": global_chapter, "volume": volume})
+                        chapter_ok = True
+                        break
+                    else:
+                        retries += 1
+                        logger.warn(f"[P2:v{volume}:ch{global_chapter}]",
+                                    f"agent exited 0 but 终稿 not found (retry {retries}/{max_retries})")
                 elif result.returncode == 124:
                     retries += 1
                     logger.warn(f"[P2:v{volume}:ch{global_chapter}]",

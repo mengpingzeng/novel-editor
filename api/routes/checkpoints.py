@@ -112,6 +112,43 @@ def _normalize_artifact(book_id, expected_rel_path, fallback_rel_path):
     return False, None
 
 
+def _normalize_diff_constraints(book_id):
+    # type: (str) -> bool
+    """查找并归一化 diff_constraints.json 到 00-素材/diff_constraints.json。
+
+    支持变体：差异化约束表.json（中文名）、01-大纲/（错目录）、两者兼有。
+    返回 True 表示文件已就位于正确位置。
+    """
+    state = load_book_state(book_id)
+    if not state:
+        return False
+    version = state.get("version", "v1")
+    ver_dir = os.path.join(BOOKS_DIR, book_id, "versions", version)
+
+    expected = os.path.join(ver_dir, "00-素材", "diff_constraints.json")
+    if os.path.exists(expected):
+        return True
+
+    fallbacks = [
+        (os.path.join(ver_dir, "00-素材", "差异化约束表.json"),
+         "00-素材/差异化约束表.json → diff_constraints.json"),
+        (os.path.join(ver_dir, "01-大纲", "diff_constraints.json"),
+         "01-大纲/diff_constraints.json → 00-素材/diff_constraints.json"),
+        (os.path.join(ver_dir, "01-大纲", "差异化约束表.json"),
+         "01-大纲/差异化约束表.json → 00-素材/diff_constraints.json"),
+    ]
+
+    for fallback_path, log_msg in fallbacks:
+        if os.path.exists(fallback_path):
+            os.makedirs(os.path.dirname(expected), exist_ok=True)
+            shutil.move(fallback_path, expected)
+            get_logger(book_id).warn(book_id,
+                f"diff_constraints 归一化: {log_msg}")
+            return True
+
+    return False
+
+
 @router.post("/{book_id}/checkpoints/version-decided", response_model=CheckpointResponse)
 def cp_version_decided(book_id: str, version: str = Query(..., regex=r"^v\d+$"),
                         platform: str = Query(default=""),
@@ -221,7 +258,21 @@ def cp_master_outline(book_id: str, path: str = Query(default="仿写衍生总�
         raise HTTPException(400, f"Master outline not found: {path}")
     set_checkpoint(book_id, ["phase1", "master_outline"], status="done", path=normalized)
     get_logger(book_id).done("[P1:f]", f"仿写总纲: {normalized}")
-    return CheckpointResponse(status="ok", book_id=book_id, checkpoint_path=["phase1", "master_outline"], checkpoint_status="done")
+
+    if _normalize_diff_constraints(book_id):
+        set_checkpoint(book_id, ["phase1", "diff_constraints"], status="done",
+                       path="00-素材/diff_constraints.json")
+        get_logger(book_id).done("[P1:f]", "差异化约束表: 00-素材/diff_constraints.json")
+    else:
+        set_checkpoint(book_id, ["phase1", "diff_constraints"], status="failed")
+        get_logger(book_id).fail("[P1:f]", "差异化约束表",
+                                 "diff_constraints.json 未找到")
+        raise HTTPException(400,
+            "diff_constraints.json not found at 00-素材/diff_constraints.json")
+
+    return CheckpointResponse(status="ok", book_id=book_id,
+                              checkpoint_path=["phase1", "master_outline"],
+                              checkpoint_status="done")
 
 
 @router.post("/{book_id}/checkpoints/novel-metadata", response_model=NovelMetadataResponse)

@@ -21,8 +21,6 @@ __pycache__/
 docs/
 task/
 versions/
-project-agents-template/
-
 .opencode/node_modules/
 .opencode/package-lock.json
 

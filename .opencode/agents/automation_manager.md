@@ -105,7 +105,7 @@ curl -s http://localhost:19080/api/v1/books/{book_id}/next-action
         curl -s -X POST "http://localhost:19080/api/v1/books/{book_id}/checkpoints/cover-prompt"
         ```
 
-    f. **总纲生成**：调用 @master_outline_generator → `仿写衍生总纲领.md`
+    f. **总纲生成**：调用 @master_outline_generator → `仿写衍生总纲领.md` + `00-素材/diff_constraints.json`
       - **通知 Pipeline**：
       ```bash
       curl -s -X POST "http://localhost:19080/api/v1/books/{book_id}/checkpoints/master-outline"

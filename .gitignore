@@ -7,3 +7,4 @@ workspace/_dryrun/
 workspace/iteration-state.json
 docs/
 config/opencode_config.json
+__pycache__/

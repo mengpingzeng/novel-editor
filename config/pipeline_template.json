@@ -90,7 +90,7 @@
           "label": "仿写衍生总纲生成",
           "step_id": "[P1:f]",
           "agent": "@master_outline_generator",
-          "produces": ["versions/{v}/仿写衍生总纲领.md"],
+          "produces": ["versions/{v}/仿写衍生总纲领.md", "versions/{v}/00-素材/diff_constraints.json"],
           "validation": ["文件存在", "文件大小 > 5KB", "含『总纲领』段落标记"],
           "skip_if_exists": true,
           "input": "base_whitepaper.md + platform_rules.json + 门面候选.json + project_salt.json"
