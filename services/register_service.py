@@ -71,7 +71,8 @@ def execute_register(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
                 "message": "Already registered"}
 
     backup_path = STATE_FILE + ".bak"
-    shutil.copy2(STATE_FILE, backup_path)
+    if os.path.exists(STATE_FILE):
+        shutil.copy2(STATE_FILE, backup_path)
 
     json.dump(scope, open(SCOPE_FILE, "w"), ensure_ascii=False, indent=2)
     shutil.copy2(SCOPE_FILE, STATE_FILE)

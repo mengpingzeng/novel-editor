@@ -170,9 +170,9 @@ class TaskQueue:
 
             if retry_task is not None:
                 if retry_task.type == "register":
-                    self._process_register_task(retry_task)
+                    self._process_register_task(retry_task, from_queue=False)
                 else:
-                    self._process_general_task(retry_task)
+                    self._process_general_task(retry_task, from_queue=False)
                 continue
 
             try:
@@ -189,18 +189,20 @@ class TaskQueue:
             else:
                 self._process_general_task(task)
 
-    def _process_register_task(self, task: Task):
+    def _process_register_task(self, task: Task, from_queue: bool = True):
         # 任务可能已被 remove_register_task 从跟踪表中删除（含 retry 后被删除的竞态），
         # 若已不在 self._tasks 中则跳过执行，避免出现「隐形 running 任务」长期占用信号量。
         with self._tasks_lock:
             if task.task_id not in self._tasks:
-                self._queue.task_done()
+                if from_queue:
+                    self._queue.task_done()
                 return
 
         acquired = self._register_semaphore.acquire(blocking=False)
         if not acquired:
             self._queue.put(task)
-            self._queue.task_done()
+            if from_queue:
+                self._queue.task_done()
             return
 
         try:
@@ -231,19 +233,22 @@ class TaskQueue:
                                  "注册失败已达重试上限，队列暂停")
         finally:
             self._register_semaphore.release()
-            self._queue.task_done()
+            if from_queue:
+                self._queue.task_done()
 
-    def _process_general_task(self, task: Task):
+    def _process_general_task(self, task: Task, from_queue: bool = True):
         # 同 _process_register_task，避免执行已被删除的任务。
         with self._tasks_lock:
             if task.task_id not in self._tasks:
-                self._queue.task_done()
+                if from_queue:
+                    self._queue.task_done()
                 return
 
         acquired = self._semaphore.acquire(blocking=True, timeout=600)
         if not acquired:
             self._queue.put(task)
-            self._queue.task_done()
+            if from_queue:
+                self._queue.task_done()
             return
 
         try:
@@ -253,7 +258,8 @@ class TaskQueue:
                 self._queue.put(task)
         finally:
             self._semaphore.release()
-            self._queue.task_done()
+            if from_queue:
+                self._queue.task_done()
 
     def pause_register_queue(self):
         self._register_paused.set()

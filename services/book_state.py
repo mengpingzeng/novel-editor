@@ -540,7 +540,11 @@ def _sync_volumes_from_master_outline(state: Dict[str, Any], book_id: str) -> bo
     ver_dir = os.path.join(BOOKS_DIR, book_id, "versions", version)
     outline_path = os.path.join(ver_dir, "仿写衍生总纲领.md")
     if not os.path.exists(outline_path):
-        return False
+        fallback_path = os.path.join(ver_dir, "00-素材", "仿写衍生总纲领.md")
+        if os.path.exists(fallback_path):
+            outline_path = fallback_path
+        else:
+            return False
 
     try:
         with open(outline_path, "r", encoding="utf-8") as f:
@@ -676,6 +680,49 @@ def _count_words(path: str) -> int:
         return 0
 
 
+_CN_DIGIT_MAP = {
+    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    "十一": 11, "十二": 12, "十三": 13, "十四": 14, "十五": 15,
+    "十六": 16, "十七": 17, "十八": 18, "十九": 19, "二十": 20,
+}
+
+
+def _parse_volume_id(vol_str: str) -> int:
+    """Parse volume number from string like '1', 'V1', 'v1', '卷一', '卷 一', '第一卷', etc.
+    Returns int or 0 if unparseable.
+    """
+    vol_str = vol_str.strip()
+    if not vol_str:
+        return 0
+    # ASCII digit format: '1', 'V1', 'v1'
+    m = re.match(r"[Vv]?(\d+)", vol_str)
+    if m:
+        return int(m.group(1))
+    # Chinese numeral format: '卷N' where N is Chinese digit
+    m = re.match(r"卷\s*([一二三四五六七八九十百]+)", vol_str)
+    if not m:
+        # Also handle '第N卷' format
+        m = re.match(r"第\s*([一二三四五六七八九十百]+)\s*卷", vol_str)
+    if m:
+        cn = m.group(1)
+        if cn in _CN_DIGIT_MAP:
+            return _CN_DIGIT_MAP[cn]
+        # Handle multi-digit Chinese numbers like '十二' (already in map)
+        # Handle '二十' and '二十X' patterns
+        if cn == "二十":
+            return 20
+        if cn.startswith("二十"):
+            suffix = cn[2:]
+            if suffix in _CN_DIGIT_MAP:
+                return 20 + _CN_DIGIT_MAP[suffix]
+        if cn.startswith("三十"):
+            suffix = cn[2:]
+            if suffix in _CN_DIGIT_MAP:
+                return 30 + _CN_DIGIT_MAP[suffix]
+    return 0
+
+
 def populate_volumes_from_god_eye(state: dict, book_id: str) -> dict:
     """从 上帝之眼/00-全书命运总谱.md 解析卷结构。
     返回 {total_volumes, total_chapters, volumes: [{volume, ch_start, ch_end}]}
@@ -709,10 +756,9 @@ def populate_volumes_from_god_eye(state: dict, book_id: str) -> dict:
             continue
         try:
             vol_str = cols[1].strip()
-            vol_match = re.match(r"[Vv]?(\d+)", vol_str)
-            if not vol_match:
+            vol_id = _parse_volume_id(vol_str)
+            if vol_id == 0:
                 continue
-            vol_id = int(vol_match.group(1))
 
             # 章数列在 col[3] 或 col[4]
             ch_str = cols[4].strip() if len(cols) > 4 else ""

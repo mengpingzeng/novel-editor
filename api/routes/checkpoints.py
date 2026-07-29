@@ -8,9 +8,10 @@ Phase 转换只在全部子步骤 done 后执行。
 import json
 import os
 import re
+import shutil
 import unicodedata
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -83,6 +84,34 @@ def _artifact_check(book_id: str, rel_path: str = "") -> bool:
     return os.path.exists(full_path)
 
 
+def _normalize_artifact(book_id, expected_rel_path, fallback_rel_path):
+    # type: (str, str, str) -> Tuple[bool, Optional[str]]
+    """检查产物文件存在，若文件在 fallback 目录则自动迁移到预期位置。
+
+    返回 (found, normalized_rel_path)：
+    - found=True 时，normalized_rel_path 始终返回 expected_rel_path
+    - found=False 时，normalized_rel_path 为 None
+    """
+    state = load_book_state(book_id)
+    if not state:
+        return False, None
+    version = state.get("version", "v1")
+    ver_dir = os.path.join(BOOKS_DIR, book_id, "versions", version)
+
+    expected = os.path.join(ver_dir, expected_rel_path)
+    if os.path.exists(expected):
+        return True, expected_rel_path
+
+    fallback = os.path.join(ver_dir, fallback_rel_path)
+    if os.path.exists(fallback):
+        shutil.move(fallback, expected)
+        get_logger(book_id).warn(book_id,
+            f"文件从 {fallback_rel_path} 自动迁移到 {expected_rel_path}")
+        return True, expected_rel_path
+
+    return False, None
+
+
 @router.post("/{book_id}/checkpoints/version-decided", response_model=CheckpointResponse)
 def cp_version_decided(book_id: str, version: str = Query(..., regex=r"^v\d+$"),
                         platform: str = Query(default=""),
@@ -137,10 +166,11 @@ def cp_facade(book_id: str, path: str = Query(default="00-素材/门面候选.js
 
 @router.post("/{book_id}/checkpoints/salt", response_model=CheckpointResponse)
 def cp_salt(book_id: str, path: str = Query(default="project_salt.json")):
-    if not _artifact_check(book_id, path):
+    found, normalized = _normalize_artifact(book_id, path, "00-素材/project_salt.json")
+    if not found:
         raise HTTPException(400, f"Salt not found: {path}")
-    set_checkpoint(book_id, ["phase1", "salt"], status="done", path=path)
-    get_logger(book_id).done("[P1:e]", f"盐值: {path}")
+    set_checkpoint(book_id, ["phase1", "salt"], status="done", path=normalized)
+    get_logger(book_id).done("[P1:e]", f"盐值: {normalized}")
     return CheckpointResponse(status="ok", book_id=book_id, checkpoint_path=["phase1", "salt"], checkpoint_status="done")
 
 
@@ -186,10 +216,11 @@ def cp_cover_generated(book_id: str):
 
 @router.post("/{book_id}/checkpoints/master-outline", response_model=CheckpointResponse)
 def cp_master_outline(book_id: str, path: str = Query(default="仿写衍生总纲领.md")):
-    if not _artifact_check(book_id, path):
+    found, normalized = _normalize_artifact(book_id, path, "00-素材/仿写衍生总纲领.md")
+    if not found:
         raise HTTPException(400, f"Master outline not found: {path}")
-    set_checkpoint(book_id, ["phase1", "master_outline"], status="done", path=path)
-    get_logger(book_id).done("[P1:f]", f"仿写总纲: {path}")
+    set_checkpoint(book_id, ["phase1", "master_outline"], status="done", path=normalized)
+    get_logger(book_id).done("[P1:f]", f"仿写总纲: {normalized}")
     return CheckpointResponse(status="ok", book_id=book_id, checkpoint_path=["phase1", "master_outline"], checkpoint_status="done")
 
 
