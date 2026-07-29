@@ -3,7 +3,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.book_state import load_book_state, list_all_books, phase_ge, verify_dict, _SIG_FIELD, BOOKS_DIR
-from services.status_service import _count_finalized, _load_metadata_verified
+from services.status_service import _count_finalized, _load_metadata_verified, _load_tags_from_salt
 from services.db import catalog_list_ids, catalog_contains
 
 
@@ -43,6 +43,25 @@ def validate_book_for_catalog(book_id):
     return True, ""
 
 
+def _resolve_tags_track(book_id, version, meta):
+    # type: (str, str, Dict[str, Any]) -> Tuple[List[str], Optional[str], Optional[str]]
+    """从 novel_metadata.json 解析 tags/track/primary_category；缺失时回退到 project_salt.json。"""
+    tags = meta.get("tags") or []
+    track = meta.get("track")
+    primary = meta.get("primary_category")
+    if (not tags) and (track is None) and (primary is None):
+        salt_tags, salt_track, salt_primary = _load_tags_from_salt(book_id, version)
+        if not tags:
+            tags = salt_tags
+        if track is None:
+            track = salt_track
+        if primary is None:
+            primary = salt_primary
+    if not isinstance(tags, list):
+        tags = []
+    return tags, track, primary
+
+
 def _enrich_book(book_id):
     # type: (str) -> Optional[Dict[str, Any]]
     state = load_book_state(book_id)
@@ -57,12 +76,17 @@ def _enrich_book(book_id):
     name = titles[0] if titles else None
     source_title = meta.get("source", {}).get("title", book_id)
 
+    tags, track, primary = _resolve_tags_track(book_id, version, meta)
+
     return {
         "book_id": book_id,
         "name": name,
         "source_title": source_title,
         "description": meta.get("description"),
         "genre": meta.get("genre"),
+        "tags": tags,
+        "track": track,
+        "primary_category": primary,
         "cover_url": "/v1/books/cover?book_id={}".format(book_id),
         "phase": state.get("phase"),
         "version": version,
@@ -103,6 +127,10 @@ def get_catalog_all(book_id_filter=None):
         source_title = meta.get("source", {}).get("title", book_id)
 
         completed = _count_finalized(state)
+        tags, track, primary = _resolve_tags_track(book_id, version, meta)
+        # track 优先用 metadata/salt 解析结果；若仍为空再退回 book_state.track
+        if track is None:
+            track = state.get("track")
 
         results.append({
             "book_id": book_id,
@@ -110,13 +138,15 @@ def get_catalog_all(book_id_filter=None):
             "source_title": source_title,
             "description": meta.get("description"),
             "genre": meta.get("genre"),
+            "tags": tags,
+            "track": track,
+            "primary_category": primary,
             "cover_url": "/v1/books/cover?book_id={}".format(book_id),
             "phase": state.get("phase"),
             "version": version,
             "total_chapters": state.get("total_chapters"),
             "chapters_completed": completed,
             "in_catalog": book_id in in_catalog_set,
-            "track": state.get("track"),
         })
 
     return results

@@ -51,7 +51,7 @@ _h11_readers.READERS[(_h11_readers.CLIENT, _h11_readers.IDLE)] = _patched_maybe_
 from config import config
 from api.models import HealthResponse, ErrorResponse
 from api.middleware import setup_cors, RequestLoggingMiddleware
-from api.routes import books, tasks, chapters, admin_catalog, admin_register, checkpoints
+from api.routes import books, tasks, chapters, admin_catalog, admin_register, admin_rewrite, checkpoints
 from worker.task_queue import task_queue
 
 app = FastAPI(
@@ -69,6 +69,7 @@ app.include_router(chapters.router)
 app.include_router(checkpoints.router)
 app.include_router(admin_catalog.router)
 app.include_router(admin_register.router)
+app.include_router(admin_rewrite.router)
 
 admin_web_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "admin_web")
 if os.path.isdir(admin_web_dir):

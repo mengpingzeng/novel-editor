@@ -72,6 +72,29 @@ def list_catalog():
     return CatalogListResponse(books=[CatalogBook(**b) for b in books])
 
 
+@router.get("/categories")
+def list_categories():
+    """返回主分类（类型）闭集列表，来源 docs/tag_vocab.json 的 main 维度。"""
+    import json as _json
+    import os as _os
+    vocab_path = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+        "docs", "tag_vocab.json",
+    )
+    items = []
+    try:
+        with open(vocab_path, "r", encoding="utf-8") as f:
+            vocab = _json.load(f)
+        main = (vocab.get("dimensions") or {}).get("main") or {}
+        items = main.get("items") or []
+    except Exception:
+        pass
+    if not items:
+        items = ["仙侠", "玄幻", "都市", "言情", "科幻", "悬疑", "武侠",
+                 "历史", "游戏", "军事", "灵异", "同人", "奇幻", "末世"]
+    return {"categories": items}
+
+
 @router.get("/status", response_model=BookStatusResponse,
             responses={404: {"model": ErrorResponse}})
 def book_status(book_id: str = Query(..., description="书名")):

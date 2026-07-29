@@ -7,15 +7,14 @@ Status service — v5 纯净版
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from services.book_state import (
     load_book_state,
     list_all_books,
     get_next_chapter,
-    verify_dict,
-    _SIG_FIELD,
     BOOKS_DIR,
+    load_novel_metadata,
 )
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,18 +30,28 @@ def _is_default_title(title: str) -> bool:
 
 
 def _load_metadata_verified(book_id: str, version: str) -> Optional[Dict[str, Any]]:
-    """加载 novel_metadata.json，验 HMAC 签名。无效文件视为不存在。"""
-    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
-    if not os.path.exists(meta_path):
-        return None
+    """加载 novel_metadata.json，验 HMAC 签名。无效时尝试从 .bak 恢复。"""
+    return load_novel_metadata(book_id, version)
+
+
+def _load_tags_from_salt(book_id: str, version: str) -> Tuple[List[str], Optional[str], Optional[str]]:
+    """从 project_salt.json 读取 classification.tags、style_track、classification.primary_category。
+    用于 novel_metadata.json 缺少对应字段时的回退（兼容历史书）。
+    """
+    salt_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "project_salt.json")
+    if not os.path.exists(salt_path):
+        return [], None, None
     try:
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
+        with open(salt_path, "r", encoding="utf-8") as f:
+            salt = json.load(f)
     except Exception:
-        return None
-    if not verify_dict(meta):
-        return None
-    return meta
+        return [], None, None
+    cls = salt.get("classification") or {}
+    tags = cls.get("tags") or []
+    tags = [t for t in tags if isinstance(t, str) and t.strip()]
+    track = salt.get("style_track") or salt.get("track")
+    primary = cls.get("primary_category") or cls.get("primary")
+    return tags, track, primary
 
 
 def get_book_status(book_id: str) -> Optional[Dict[str, Any]]:
@@ -279,6 +288,20 @@ def get_book_metadata(book_id: str) -> Optional[Dict[str, Any]]:
     name = titles[0] if titles else None
     chapter_names = _load_chapter_names(book_id, version)
 
+    tags = meta.get("tags") or []
+    track = meta.get("track")
+    primary = meta.get("primary_category")
+    if (not tags) and (track is None) and (primary is None):
+        salt_tags, salt_track, salt_primary = _load_tags_from_salt(book_id, version)
+        if not tags:
+            tags = salt_tags
+        if track is None:
+            track = salt_track
+        if primary is None:
+            primary = salt_primary
+    if not isinstance(tags, list):
+        tags = []
+
     return {
         "book_id": book_id,
         "name": name,
@@ -291,4 +314,7 @@ def get_book_metadata(book_id: str) -> Optional[Dict[str, Any]]:
         "chapters_completed": _count_finalized(state),
         "total_chapters": state.get("total_chapters"),
         "cover_image": meta.get("cover_image"),
+        "tags": tags,
+        "track": track,
+        "primary_category": primary,
     }

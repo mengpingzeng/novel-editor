@@ -1,0 +1,37 @@
+services:
+  novel-editor:
+    build:
+      # 构建上下文为项目根目录（docker/ 的上级目录）
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: novel-editor:latest
+    container_name: novel-editor
+    ports:
+      - "19080:19080"
+    extra_hosts:
+      # host.docker.internal → 宿主机，容器内通过此域名访问宿主机上的 main-repo 等服务
+      - "host.docker.internal:host-gateway"
+    environment:
+      - NOVEL_EDITOR_HOST=0.0.0.0
+      - NOVEL_EDITOR_PORT=19080
+      - NOVEL_EDITOR_MAX_CONCURRENT_BOOKS=2
+      - PHASE1_TIMEOUT=3600
+      - CHAPTER_TIMEOUT=1800
+      - COVER_TIMEOUT=300
+      - COVER_BASE_URL=https://toapis.com
+      - MAINREPO_URL=http://host.docker.internal:8088
+      - SKIP_KILL_PORT=true
+      - OPENCODE_CONFIG=/mnt/data/novel-editor/config/opencode_config.json
+    volumes:
+      # 数据持久化：所有生成的小说内容、状态文件、SQLite DB
+      - /mnt/data/novel-editor/workspace:/mnt/data/novel-editor/workspace
+      # opencode 模型 Key（DeepSeek + TokenHub），宿主机填真实值后重启生效
+      - /mnt/data/novel-editor/config/opencode_config.json:/mnt/data/novel-editor/config/opencode_config.json:ro
+      # 项目运行配置（含封面生成 Key），宿主机填真实值后重启生效
+      - /mnt/data/novel-editor/config.json:/mnt/data/novel-editor/config.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:19080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

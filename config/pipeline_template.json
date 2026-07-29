@@ -1,0 +1,221 @@
+{
+  "pipeline_name": "novel-editor 小说自动生成流水线",
+  "version": "v5",
+  "description": "每本书从注册到完成全部章节的标准流程。每步标注产物路径和验证规则。运行时日志使用相同步骤编号对齐。",
+  "phases": {
+    "phase0": {
+      "label": "Phase 0: 前置准备",
+      "steps": {
+        "source_uploaded": {
+          "label": "上传 source.txt",
+          "step_id": "[P0:src]",
+          "produces": ["workspace/repo/{book_id}/source.txt"],
+          "validation": ["文件存在", "文件 > 可配置最小字节数"],
+          "skip_if_exists": true
+        },
+        "admin_submitted": {
+          "label": "管理员提交注册",
+          "step_id": "[P0:sub]",
+          "produces": [],
+          "validation": ["source.txt 已验证存在"],
+          "skip_if_exists": false
+        }
+      }
+    },
+    "phase1": {
+      "label": "Phase 1: 框架生成 (automation_manager)",
+      "steps": {
+        "version_decided": {
+          "label": "版本号决策",
+          "step_id": "[P1:ver]",
+          "produces": ["book_state.json → version 字段"],
+          "validation": ["version 格式: v\\d+", "versions/{version}/ 目录已创建"],
+          "skip_if_exists": true
+        },
+        "whitepaper": {
+          "label": "原作拆解 → 生成白皮书",
+          "step_id": "[P1:a]",
+          "agent": "@original_analyst",
+          "produces": ["versions/{v}/00-素材/base_whitepaper.md"],
+          "validation": ["文件存在", "文件大小 > 1KB", "含『基准白皮书』段落标记"],
+          "skip_if_exists": true,
+          "input": "workspace/repo/{book_id}/source.txt"
+        },
+        "platform_rules": {
+          "label": "平台规则查询",
+          "step_id": "[P1:b]",
+          "skill": "compliance-rule-query",
+          "produces": ["versions/{v}/00-素材/platform_rules.json"],
+          "validation": ["文件存在", "JSON 可解析", "含 platform 字段"],
+          "skip_if_exists": true,
+          "input": "target_platform (来自 book_state.json → platform)"
+        },
+        "style_mapped": {
+          "label": "赛道映射",
+          "step_id": "[P1:c]",
+          "agent": "@style-mapper",
+          "produces": ["versions/{v}/00-素材/赛道映射.json"],
+          "validation": ["文件存在", "JSON 可解析", "含 classification 字段"],
+          "skip_if_exists": true,
+          "input": "base_whitepaper.md + track"
+        },
+        "facade": {
+          "label": "门面生成（5 个候选书名+简介）",
+          "step_id": "[P1:d]",
+          "agent": "@facade_generator",
+          "produces": ["versions/{v}/00-素材/门面候选.json"],
+          "validation": ["文件存在", "candidates 数组长度 ≥ 4"],
+          "skip_if_exists": true,
+          "input": "赛道映射.json + base_whitepaper.md"
+        },
+        "salt": {
+          "label": "盐值校验（去重+标准化）",
+          "step_id": "[P1:e]",
+          "agent": "@salt_architect",
+          "produces": ["versions/{v}/project_salt.json"],
+          "validation": ["文件存在", "JSON 可解析", "validation.passed == true"],
+          "skip_if_exists": true,
+          "input": "门面候选.json + 赛道映射.json + base_whitepaper.md"
+        },
+        "cover_prompt": {
+          "label": "封面 Prompt 生成",
+          "step_id": "[P1:e2]",
+          "agent": "@cover_prompt_generator",
+          "produces": ["versions/{v}/00-素材/cover_prompt.json"],
+          "validation": ["文件存在", "prompt 字段非空"],
+          "skip_if_exists": true,
+          "input": "project_salt.json"
+        },
+        "master_outline": {
+          "label": "仿写衍生总纲生成",
+          "step_id": "[P1:f]",
+          "agent": "@master_outline_generator",
+          "produces": ["versions/{v}/仿写衍生总纲领.md"],
+          "validation": ["文件存在", "文件大小 > 5KB", "含『总纲领』段落标记"],
+          "skip_if_exists": true,
+          "input": "base_whitepaper.md + platform_rules.json + 门面候选.json + project_salt.json"
+        },
+        "novel_metadata": {
+          "label": "创建 novel_metadata.json",
+          "step_id": "[P1:g2]",
+          "produces": ["versions/{v}/发布/novel_metadata.json"],
+          "validation": ["title 数组 >= 5 个", "genre 非空", "protagonist 非空", "description 非空"],
+          "skip_if_exists": false,
+          "input": "门面候选.json + project_salt.json + cover_prompt.json + 赛道映射.json"
+        },
+        "cover_generated": {
+          "label": "封面图生成",
+          "step_id": "[P1:e3]",
+          "produces": ["versions/{v}/发布/cover.png"],
+          "validation": ["文件存在", "文件大小 > 10KB"],
+          "skip_if_exists": true,
+          "input": "00-素材/cover_prompt.json → cover_service.generate_cover"
+        },
+        "agents_copied": {
+          "label": "复制项目 agents + 配置",
+          "step_id": "[P1:h]",
+          "produces": ["book_dir/.opencode/agents/chief_editor.md", "book_dir/opencode.json"],
+          "validation": ["chief_editor.md 存在", "opencode.json 存在"],
+          "skip_if_exists": true,
+          "input": "project-agents-template/"
+        },
+        "phase1_done": {
+          "label": "Phase 1 完成确认",
+          "step_id": "[P1:done]",
+          "produces": ["book_state.json → checkpoints.phase1.phase1_done = done"],
+          "validation": ["前面 11 个 checkpoint 全部 status=done", "所有产物路径下的文件存在"],
+          "skip_if_exists": true
+        }
+      }
+    },
+    "phase2": {
+      "label": "Phase 2: 写章 (chief_editor)",
+      "description": "逐卷逐章执行，每一卷包含: 命运设计 → 卷纲 → 逐章(章纲→初稿→合规→质检→终稿)",
+      "per_volume_steps": {
+        "destiny_global": {
+          "label": "全局命运设计",
+          "step_id": "[P2:v{vol}:dg]",
+          "agent": "@destiny_designer (global_only=true)",
+          "produces": ["上帝之眼/00-全书命运总谱.md", "上帝之眼/01-人物命运谱/", "上帝之眼/03-伏笔命运谱/", "上帝之眼/04-世界观展开谱/"],
+          "validation": ["00 存在", "01 目录非空", "03 核心文件存在", "04 核心文件存在"],
+          "skip_if_exists": true,
+          "per_volume": true
+        },
+        "destiny_volume": {
+          "label": "本卷命运设计",
+          "step_id": "[P2:v{vol}:dv]",
+          "agent": "@destiny_designer (rebuild_volume={vol})",
+          "produces": ["上帝之眼/02-剧情命运谱/卷XX-剧情.md", "上帝之眼/05-卷级注入/卷XX-注入包.md"],
+          "validation": ["02 文件存在", "05 注入包存在", "注入包 §3 事件链非空"],
+          "skip_if_exists": true,
+          "per_volume": true
+        },
+        "volume_outline": {
+          "label": "卷纲规划",
+          "step_id": "[P2:v{vol}:ol]",
+          "agent": "@plot_planner (卷规划模式)",
+          "produces": ["01-大纲/01-卷纲/卷纲-第{vol}卷.md"],
+          "validation": ["文件存在", "文件大小 > 500 字节"],
+          "skip_if_exists": true,
+          "per_volume": true
+        },
+        "chapters": {
+          "label": "章节循环",
+          "step_id": "[P2:v{vol}:ch{ch}]",
+          "per_chapter": true,
+          "sub_steps": {
+            "outline": {
+              "label": "章纲生成",
+              "agent": "@plot_planner (章纲模式)",
+              "produces": ["01-大纲/第{ch}章章纲.md"],
+              "validation": ["文件存在", "文件大小 > 500 字节"],
+              "skip_if_exists": true
+            },
+            "draft": {
+              "label": "正文初稿",
+              "agent": "@content_writer (mode=fresh)",
+              "produces": ["02-正文/第{ch}章-初稿-v1.md"],
+              "validation": ["文件存在"],
+              "skip_if_exists": false
+            },
+            "compliance": {
+              "label": "合规门禁",
+              "agent": "@compliance_tomato / @compliance_qimao",
+              "produces": ["03-纪要/第{ch}章合规审查-v{n}.md"],
+              "validation": ["文件存在"],
+              "skip_if_exists": false
+            },
+            "quality": {
+              "label": "质检评分",
+              "agent": "@quality_reviewer",
+              "produces": ["03-纪要/第{ch}章纪要-v{n}.md"],
+              "validation": ["文件存在", "score 为合法 float"],
+              "skip_if_exists": false
+            },
+            "finalized": {
+              "label": "章节终稿确认",
+              "step_id": "[P2:v{vol}:ch{ch}:fin]",
+              "produces": ["02-正文/第{ch}章-终稿.md (从最佳版本复制)", "book_state.json → chapter finalized + metadata.word_count/title", "novel_metadata.json → chapter_names[{ch}-1]"],
+              "validation": ["outline.done", "draft.done", "compliance.done", "quality.done", "终稿文件存在", "title 非默认名"],
+              "skip_if_exists": true
+            }
+          }
+        },
+        "volume_archived": {
+          "label": "卷归档完成",
+          "step_id": "[P2:v{vol}:arc]",
+          "produces": ["book_state.json → checkpoints.phase2.volume_{vol}.volume_archived = done", "伏笔状态滚动摘要归档"],
+          "validation": ["本卷所有章 finalized 状态 done"],
+          "per_volume": true
+        }
+      },
+      "phase2_done": {
+        "label": "Phase 2 完成确认",
+        "step_id": "[P2:done]",
+        "produces": ["book_state.json → checkpoints.phase2_done = done"],
+        "validation": ["所有卷 volume_archived done"],
+        "skip_if_exists": true
+      }
+    }
+  }
+}

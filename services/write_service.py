@@ -4,7 +4,6 @@ Phase 2 write service — v5 纯净版
 使用 checkpoints 驱动写章流程。不自动设 checkpoint（由 agent 完成后 pipeline 调用 API 落盘）。
 """
 
-import json
 import os
 import re
 import subprocess
@@ -22,13 +21,16 @@ from services.book_state import (
     phase_ge,
     populate_volumes_from_god_eye,
     save_book_state,
-    sign_dict,
-    _SIG_FIELD,
     BOOKS_DIR,
+    load_novel_metadata,
+    save_novel_metadata,
 )
 from services.log_service import get_logger
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+_DEFAULT_TITLE_RE = re.compile(r"^第\d+章[-_]?(初稿|终稿)(-v\d+)?$")
+_CHAPTER_PREFIX_RE = re.compile(r"^第\d+章\s*")
 
 
 def write_chapters(book_id: str, chapters: int = 1) -> str:
@@ -73,12 +75,17 @@ def execute_write(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
         global_chapter = next_ch["global_chapter"]
         volume = next_ch["volume"]
+        resume_step = next_ch.get("resume_step", "outline")
         vol_key = f"volume_{volume}"
         ch_key = str(global_chapter)
 
-        if is_checkpoint_done(book_id, ["phase2", vol_key, "chapters", ch_key, "finalized"]):
+        if is_checkpoint_done(book_id, ["phase2", vol_key, "chapters", ch_key, "finalized"]) \
+                and is_checkpoint_done(book_id, ["phase2", vol_key, "chapters", ch_key, "chapter_name"]):
             logger.skip(f"[P2:v{volume}:ch{global_chapter}]", "已终稿")
             continue
+
+        logger.info(f"[P2:v{volume}:ch{global_chapter}]",
+                     f"从 {resume_step} 步骤恢复" if resume_step != "outline" else "开始生产")
 
         if not _ensure_volume_resources(book_id, volume, version, logger):
             return {"success": False, "chapters_written": written,
@@ -120,7 +127,11 @@ def execute_write(book_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
                 if result.returncode == 0 and os.path.exists(ch_final):
                     word_count = _count_words(ch_final)
-                    title = _extract_title(ch_final)
+                    title = _resolve_chapter_title(ch_final, book_dir, version, global_chapter)
+                    # 用 gen 文件内容同步更新终稿 # 首行
+                    gen_title = _get_fallback_title(book_dir, version, global_chapter)
+                    if gen_title:
+                        _sync_title_to_draft(ch_final, book_dir, version, global_chapter, gen_title)
                     set_checkpoint(book_id,
                                    ["phase2", vol_key, "chapters", ch_key, "finalized"],
                                    status="done", word_count=word_count, title=title)
@@ -212,16 +223,69 @@ def _count_words(path: str) -> int:
         return 0
 
 
+def _is_default_title(title: str) -> bool:
+    """判断是否为默认占位标题（第N章-终稿 / 第N章-初稿）"""
+    if not title:
+        return True
+    return bool(_DEFAULT_TITLE_RE.match(title.strip()))
+
+
 def _extract_title(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("# "):
-                    return line[2:].strip()
+                    title = line[2:].strip()
+                    title = _CHAPTER_PREFIX_RE.sub("", title)
+                    return title
         return os.path.basename(path).replace(".md", "")
     except Exception:
         return ""
+
+
+def _get_fallback_title(book_dir: str, version: str, chapter: int) -> Optional[str]:
+    """从 gen 文件读取章节名生成器产出的标题。"""
+    gen_path = os.path.join(book_dir, "versions", version,
+                            "02-正文", f"第{chapter}章-章节名-gen.txt")
+    if not os.path.exists(gen_path):
+        return None
+    try:
+        with open(gen_path, "r", encoding="utf-8") as f:
+            title = f.read().strip()
+        if title and not _is_default_title(title):
+            return title
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_chapter_title(ch_final: str, book_dir: str, version: str, chapter: int) -> str:
+    """解析章节标题：gen 文件第一优先级 → # 首行兜底 → 文件名 fallback。"""
+    gen_title = _get_fallback_title(book_dir, version, chapter)
+    if gen_title:
+        return gen_title
+    return _extract_title(ch_final)
+
+
+def _sync_title_to_draft(ch_final: str, book_dir: str, version: str, chapter: int, gen_title: str):
+    """用 gen 文件内容更新终稿 # 首行：有则替换，无则插入。"""
+    if not os.path.exists(ch_final) or not gen_title:
+        return
+    try:
+        with open(ch_final, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        title_line = f"# 第{chapter}章 {gen_title}\n"
+        if lines and lines[0].startswith("# "):
+            lines[0] = title_line
+        else:
+            lines.insert(0, title_line)
+
+        with open(ch_final, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except Exception:
+        pass
 
 
 def _init_phase2(book_id: str, version: str, book_dir: str, logger) -> Dict[str, Any]:
@@ -310,40 +374,48 @@ def _init_phase2(book_id: str, version: str, book_dir: str, logger) -> Dict[str,
 
 def _sync_metadata_total_chapters(book_id: str, version: str, total_chapters: int):
     """将 God's Eye 解析出的 total_chapters 同步到 novel_metadata.json"""
-    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
-    if not os.path.exists(meta_path):
+    meta = load_novel_metadata(book_id, version)
+    if meta is None:
         return
-    try:
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-        meta.pop(_SIG_FIELD, None)
-        meta["total_chapters"] = total_chapters
-        meta[_SIG_FIELD] = sign_dict(meta)
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-    except Exception:
-        pass
+    meta["total_chapters"] = total_chapters
+    save_novel_metadata(book_id, version, meta)
 
 
 def _sync_chapter_name_to_metadata(book_id: str, version: str, chapter: int, title: str):
-    """每章完成后同步章节名到 novel_metadata.json（HMAC 签名保护）"""
-    meta_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
-    if not os.path.exists(meta_path):
+    """每章完成后同步章节名到 novel_metadata.json（HMAC 签名保护）。
+
+    v8: 同时维护 chapters 字典（扩展格式），记录 title_source 标识。
+        title_source 取值：
+        - "agent"：     content_writer 直接产出正确的 # 标题
+        - "generated"： chapter_name_generator 兜底生成
+    """
+    meta = load_novel_metadata(book_id, version)
+    if meta is None:
         return
-    try:
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-        meta.pop(_SIG_FIELD, None)
-        names = meta.get("chapter_names", [])
-        while len(names) < chapter:
-            names.append("")
-        names[chapter - 1] = title
-        meta["chapter_names"] = names
-        meta["chapters_completed"] = chapter
-        meta[_SIG_FIELD] = sign_dict(meta)
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-    except Exception:
-        pass
+
+    # chapter_names 数组（兼容旧格式）
+    names = meta.get("chapter_names", [])
+    while len(names) < chapter:
+        names.append("")
+    names[chapter - 1] = title
+    meta["chapter_names"] = names
+    meta["chapters_completed"] = chapter
+
+    # chapters 字典（v8 扩展格式，含 title_source）
+    chapters = meta.get("chapters", {})
+    ch_key = str(chapter)
+    if ch_key not in chapters:
+        chapters[ch_key] = {}
+    chapters[ch_key]["title"] = title
+
+    # 判断 title_source：检查 gen 文件是否存在
+    book_dir = os.path.join(BOOKS_DIR, book_id)
+    gen_path = os.path.join(book_dir, "versions", version,
+                            "02-正文", f"第{chapter}章-章节名-gen.txt")
+    if _is_default_title(title) or os.path.exists(gen_path):
+        chapters[ch_key]["title_source"] = "generated"
+    else:
+        chapters[ch_key]["title_source"] = "agent"
+    meta["chapters"] = chapters
+
+    save_novel_metadata(book_id, version, meta)

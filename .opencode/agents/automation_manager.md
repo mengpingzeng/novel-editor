@@ -118,8 +118,27 @@ curl -s http://localhost:19080/api/v1/books/{book_id}/next-action
 
     g2. **创建 novel_metadata.json（通过 API）**：
         收集以下字段，调用 Pipeline API 创建：
-        ...
+        - `book_id`：仿写书名（取门面候选最优书名）
+        - `title`：≥5 个候选书名（含主书名+备选）
+        - `genre`：主分类（仙侠/玄幻/都市/言情/科幻/悬疑/武侠/历史/游戏/军事/灵异/同人/奇幻/末世 之一）
+        - `protagonist`：主角名（来自 character_mapping 主角 name）
+        - `description`：简介（来自 facade 的 book_blurb）
+        - `cover_prompt`：封面生图 prompt（来自 cover_prompt.json）
+        - `word_count_target`：目标字数（来自 project_salt.target_total_word_count.calculated_target）
+        - `total_chapters`：目标章数（来自 project_salt.target_total_word_count.derived_total_chapters）
+        - `tags`：**细粒度标签数组，直接取自 `project_salt.json` 的 `classification.tags`（3-5 个，勿自行改写/拼接成字符串）**
+        - `track`：**赛道，直接取自 `project_salt.json` 的 `style_track`**
+        - `setting`：世界观简述（来自白皮书 §二）
+        - `source_title` / `source_author`：原著名/原作者
+
+        调用示例：
+        ```bash
+        curl -s -X POST "http://localhost:19080/api/v1/books/{book_id}/checkpoints/novel-metadata" \
+          -H "Content-Type: application/json" \
+          -d '{"book_id":"...","title":[...],"genre":"玄幻","protagonist":"...","description":"...","cover_prompt":"...","word_count_target":250000,"total_chapters":125,"tags":["废柴逆袭","系统流","血脉觉醒","宗门纷争"],"track":"玄幻升级","setting":"...","source_title":"...","source_author":"..."}'
         ```
+        - **tags 必须是字符串数组**（如 `["废柴逆袭","系统流"]`），不可传逗号拼接字符串
+        - tags/track 须与 project_salt.json 完全一致，本步不重新生成标签
 
     e3. **封面图生成**：通过 Pipeline API 生成封面图 `cover.png`（后端调用 Gemini 图片生成 API）：
         ```bash

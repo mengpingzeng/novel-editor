@@ -16,7 +16,7 @@ import sys
 from typing import Any, Dict, Optional
 
 from config import config
-from services.book_state import sign_dict, _SIG_FIELD
+from services.book_state import load_novel_metadata, save_novel_metadata
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOOKS_DIR = os.path.join(ROOT_DIR, "workspace", "books")
@@ -77,7 +77,8 @@ def execute_generate_cover(book_id: str, params: Dict[str, Any]) -> Dict[str, An
     except cover_gen.CoverError as e:
         return {"success": False, "error": str(e)}
 
-    _update_metadata(publish_dir)
+    resolved_version = os.path.basename(ver_dir)
+    _update_metadata(book_id, resolved_version)
 
     return {"success": True, "cover_path": cover_path}
 
@@ -103,20 +104,11 @@ def _resolve_version_dir(book_id: str, version: Optional[str]) -> Optional[str]:
     return os.path.join(versions_dir, all_versions[-1])
 
 
-def _update_metadata(publish_dir: str):
-    metadata_path = os.path.join(publish_dir, METADATA_FILENAME)
-    if not os.path.exists(metadata_path):
+def _update_metadata(book_id: str, version: str):
+    meta = load_novel_metadata(book_id, version)
+    if meta is None:
         return
-
-    with open(metadata_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    data.pop(_SIG_FIELD, None)
-    data["cover_image"] = "./cover.png"
-    data["cover_generated_by"] = "gemini-3.1-flash-image-preview"
-    data["cover_resolution"] = "3:4 (1K)"
-    data[_SIG_FIELD] = sign_dict(data)
-
-    with open(metadata_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    meta["cover_image"] = "./cover.png"
+    meta["cover_generated_by"] = "gemini-3.1-flash-image-preview"
+    meta["cover_resolution"] = "3:4 (1K)"
+    save_novel_metadata(book_id, version, meta)

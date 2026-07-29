@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 from datetime import datetime, timezone
 from glob import glob
 from typing import Any, Dict, List, Optional, Tuple
@@ -178,23 +179,43 @@ def _compute_quality_avg(state: Dict[str, Any]) -> float:
 # ── 核心读写 ──────────────────────────────────────────────
 
 def load_book_state(book_id: str) -> Optional[Dict[str, Any]]:
-    """加载 book_state.json。无有效 HMAC 签名的文件视为 LLM 伪造，删除并返回 None。"""
+    """加载 book_state.json。无有效 HMAC 签名时尝试从 .bak 恢复。"""
     path = _state_path(book_id)
     if not os.path.exists(path):
         return None
 
-    with open(path, "r", encoding="utf-8") as f:
-        state = json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        state = None
 
-    if not _verify(state):
+    if state and _verify(state):
+        if "checkpoints" not in state:
+            state["checkpoints"] = {
+                "phase1": _empty_phase1_done_checkpoint(),
+            }
+        return state
+
+    bak_path = path + ".bak"
+    if os.path.exists(bak_path):
+        try:
+            with open(bak_path, "r", encoding="utf-8") as f:
+                bak_state = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            bak_state = None
+
+        if bak_state and _verify(bak_state):
+            shutil.copy2(bak_path, path)
+            if "checkpoints" not in bak_state:
+                bak_state["checkpoints"] = {
+                    "phase1": _empty_phase1_done_checkpoint(),
+                }
+            return bak_state
+
+    if os.path.exists(path):
         os.remove(path)
-        return None
-
-    if "checkpoints" not in state:
-        state["checkpoints"] = {
-            "phase1": _empty_phase1_done_checkpoint(),
-        }
-    return state
+    return None
 
 
 def save_book_state(book_id: str, data: Dict[str, Any]):
@@ -217,6 +238,65 @@ def save_book_state(book_id: str, data: Dict[str, Any]):
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp_path, path)
+    try:
+        shutil.copy2(path, path + ".bak")
+    except OSError:
+        pass
+
+
+# ── novel_metadata.json 读写 ───────────────────────────────
+
+def _metadata_path(book_id: str, version: str) -> str:
+    return os.path.join(BOOKS_DIR, book_id, "versions", version, "发布", "novel_metadata.json")
+
+
+def load_novel_metadata(book_id: str, version: str = "v1") -> Optional[Dict[str, Any]]:
+    """加载 novel_metadata.json，HMAC 验证失败时尝试从 .bak 恢复。"""
+    meta_path = _metadata_path(book_id, version)
+    if not os.path.exists(meta_path):
+        return None
+
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        meta = None
+
+    if meta and verify_dict(meta):
+        return meta
+
+    bak_path = meta_path + ".bak"
+    if os.path.exists(bak_path):
+        try:
+            with open(bak_path, "r", encoding="utf-8") as f:
+                bak_meta = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            bak_meta = None
+
+        if bak_meta and verify_dict(bak_meta):
+            shutil.copy2(bak_path, meta_path)
+            return bak_meta
+
+    return None
+
+
+def save_novel_metadata(book_id: str, version: str, data: Dict[str, Any]):
+    """原子写入 novel_metadata.json + .bak，写入前 HMAC 签名。"""
+    meta_path = _metadata_path(book_id, version)
+    os.makedirs(os.path.dirname(meta_path), exist_ok=True)
+
+    data.pop(_SIG_FIELD, None)
+    data[_SIG_FIELD] = sign_dict(data)
+
+    tmp_path = meta_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp_path, meta_path)
+    try:
+        shutil.copy2(meta_path, meta_path + ".bak")
+    except OSError:
+        pass
 
 
 def ensure_book_state(book_id: str) -> Dict[str, Any]:
@@ -422,7 +502,7 @@ def find_next_action(book_id: str) -> Dict[str, Any]:
                 ch_data = {}
                 vol_data.setdefault("chapters", {})[ch_key] = ch_data
 
-            for ch_step in ["outline", "draft", "compliance", "quality", "finalized"]:
+            for ch_step in ["outline", "draft", "compliance", "quality", "finalized", "chapter_name"]:
                 node = ch_data.get(ch_step, {})
                 if node.get("status") != "done":
                     return {
@@ -545,12 +625,20 @@ def phase_ge(current: str, required: str) -> bool:
 
 
 def get_next_chapter(book_id: str) -> Optional[Dict[str, Any]]:
+    """返回第一个未完成的章节及其第一个未完成的子步骤。
+    
+    Returns:
+        None 或 {"global_chapter": int, "volume": int, "resume_step": str}
+        resume_step 为第一个 pending 子步骤名: outline/draft/compliance/quality/finalized/chapter_name
+    """
     state = load_book_state(book_id)
     if state is None:
         return None
 
     p2 = state.get("checkpoints", {}).get("phase2", {})
     volumes = state.get("volumes", [])
+
+    CHAPTER_STEPS = ["outline", "draft", "compliance", "quality", "finalized", "chapter_name"]
 
     for vol in volumes:
         vol_num = vol["volume"]
@@ -560,8 +648,21 @@ def get_next_chapter(book_id: str) -> Optional[Dict[str, Any]]:
         for ch_num in range(vol["ch_start"], vol["ch_end"] + 1):
             ch_key = str(ch_num)
             ch_data = vol_data.get("chapters", {}).get(ch_key, {})
-            if ch_data.get("finalized", {}).get("status") != "done":
-                return {"global_chapter": ch_num, "volume": vol_num}
+            if not ch_data:
+                return {"global_chapter": ch_num, "volume": vol_num, "resume_step": "outline"}
+
+            fin_done = ch_data.get("finalized", {}).get("status") == "done"
+            cn_done = ch_data.get("chapter_name", {}).get("status") == "done"
+
+            if fin_done and cn_done:
+                continue
+
+            for step in CHAPTER_STEPS:
+                node = ch_data.get(step, {})
+                if node.get("status") != "done":
+                    return {"global_chapter": ch_num, "volume": vol_num, "resume_step": step}
+
+            return {"global_chapter": ch_num, "volume": vol_num, "resume_step": "outline"}
 
     return None
 

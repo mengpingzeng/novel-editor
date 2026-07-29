@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小说目录管理 — novel-editor</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; }
+header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+header h1 { font-size: 18px; font-weight: 600; }
+header .count { font-size: 13px; color: #888; margin-left: 8px; }
+main { max-width: 1400px; margin: 0 auto; padding: 24px; }
+.section-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.section-title .badge { background: #f0f0f0; color: #666; font-size: 12px; padding: 2px 8px; border-radius: 10px; }
+.toolbar { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+.toolbar input { flex: 1; min-width: 240px; padding: 8px 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; }
+.toolbar input:focus { border-color: #f97316; }
+.toolbar button { padding: 8px 16px; border: none; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; transition: background .15s; }
+.btn-add { background: #f97316; color: #fff; }
+.btn-add:hover { background: #ea580c; }
+.btn-remove { background: #ef4444; color: #fff; }
+.btn-remove:hover { background: #dc2626; }
+.btn-outline { background: #fff; border: 1px solid #ddd; color: #333; }
+.btn-outline:hover { background: #f5f5f5; }
+.btn-rewrite { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; }
+.btn-rewrite:hover { background: #fee2e2; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.card { background: #fff; border-radius: 12px; border: 1px solid #e0e0e0; overflow: hidden; cursor: pointer; transition: all .15s; position: relative; }
+.card:hover { border-color: #f97316; box-shadow: 0 2px 8px rgba(249,115,22,.12); }
+.card.selected { border-color: #f97316; box-shadow: 0 0 0 2px rgba(249,115,22,.25); }
+.card .cover { aspect-ratio: 3/4; background: #e5e7eb; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.card .cover img { width: 100%; height: 100%; object-fit: cover; }
+.card .cover .placeholder { color: #9ca3af; font-size: 28px; }
+.card .info { padding: 10px 12px; }
+.card .info .name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .info .meta { font-size: 11px; color: #888; margin-top: 2px; }
+.card .check { position: absolute; top: 8px; right: 8px; width: 22px; height: 22px; border-radius: 6px; border: 2px solid #fff; background: rgba(255,255,255,.9); display: flex; align-items: center; justify-content: center; }
+.card.selected .check { background: #f97316; border-color: #f97316; }
+.card.selected .check::after { content: "✓"; color: #fff; font-size: 13px; font-weight: 700; }
+.catalog-badge { position: absolute; top: 8px; left: 8px; background: #22c55e; color: #fff; font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+.toast { position: fixed; bottom: 24px; right: 24px; background: #333; color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 13px; z-index: 100; opacity: 0; transition: opacity .3s; pointer-events: none; }
+.toast.show { opacity: 1; }
+.toast.error { background: #ef4444; }
+.empty { text-align: center; color: #999; padding: 48px 0; font-size: 14px; }
+.section { margin-bottom: 32px; }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ddd; border-top-color: #f97316; border-radius: 50%; animation: spin .6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.queue-list { list-style: none; }
+.queue-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; margin-bottom: 8px; font-size: 13px; }
+.queue-item:hover { border-color: #f97316; }
+.queue-item .pos { width: 28px; height: 28px; border-radius: 50%; background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+.queue-item.running .pos { background: #f97316; color: #fff; }
+.queue-item.failed .pos { background: #ef4444; color: #fff; }
+.queue-item.completed .pos { background: #22c55e; color: #fff; }
+.queue-item .detail { flex: 1; min-width: 0; }
+.queue-item .detail .name { font-weight: 600; }
+.queue-item .detail .sub { font-size: 11px; color: #888; margin-top: 1px; }
+.queue-item .actions { display: flex; gap: 4px; flex-shrink: 0; }
+.queue-item .actions button { padding: 4px 10px; border: none; border-radius: 6px; font-size: 11px; cursor: pointer; }
+.btn-retry { background: #f97316; color: #fff; }
+.btn-retry:hover { background: #ea580c; }
+.btn-delete { background: #fee2e2; color: #dc2626; }
+.btn-delete:hover { background: #fecaca; }
+.btn-resume { background: #22c55e; color: #fff; }
+.btn-resume:hover { background: #16a34a; }
+.register-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.register-form select { padding: 6px 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 13px; background: #fff; }
+.paused-banner { background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 8px 14px; margin-bottom: 12px; font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
+.status-tag { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.status-tag.queued { background: #e5e7eb; color: #666; }
+.status-tag.running { background: #fff7ed; color: #f97316; }
+.status-tag.failed { background: #fee2e2; color: #dc2626; }
+.status-tag.completed { background: #dcfce7; color: #16a34a; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <span style="font-size:18px;font-weight:600;">📚 小说目录管理</span>
+    <span class="count" id="header-count"></span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;">
+    <input id="search" type="text" placeholder="搜索书名..." style="width:200px;padding:6px 10px;border:1px solid #ddd;border-radius:8px;font-size:13px;">
+  </div>
+</header>
+<main>
+  <div class="section">
+    <div class="section-title">
+      可注册小说
+      <span class="badge" id="avail-count">0</span>
+    </div>
+    <div class="toolbar">
+      <div class="register-form">
+        <select id="reg-platform">
+          <option value="番茄小说">番茄小说</option>
+          <option value="七猫小说">七猫小说</option>
+        </select>
+        <select id="reg-track">
+          <option value="auto">自动判定</option>
+          <option value="历史">历史穿越</option>
+          <option value="都市">都市爽文</option>
+          <option value="仙侠">仙侠修真</option>
+          <option value="玄幻">玄幻升级</option>
+          <option value="言情">女频言情</option>
+          <option value="悬疑">悬疑灵异</option>
+          <option value="科幻">科幻末世</option>
+        </select>
+      </div>
+      <button id="avail-select-all" class="btn-outline">全选</button>
+      <button id="register-submit-btn" class="btn-add">开始注册</button>
+    </div>
+    <div class="grid" id="avail-grid"></div>
+    <div class="empty" id="avail-empty" style="display:none">暂无可注册的小说（所有源文件都已注册或已在队列中）</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      注册中
+      <span class="badge" id="queue-count">0</span>
+      <span id="paused-label" style="display:none;margin-left:8px;font-size:12px;color:#f59e0b;font-weight:400;">⏸ 已暂停</span>
+    </div>
+    <div class="toolbar">
+      <button id="queue-resume-btn" class="btn-resume" style="display:none;">恢复注册</button>
+    </div>
+    <div id="queue-list"></div>
+    <div class="empty" id="queue-empty">暂无进行中的注册任务</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      已上线目录
+      <span class="badge" id="catalog-count">0</span>
+    </div>
+    <div class="toolbar">
+      <button id="catalog-select-all" class="btn-outline">全选</button>
+      <button id="catalog-remove-btn" class="btn-remove">从目录移除</button>
+    </div>
+    <div class="grid" id="catalog-grid"></div>
+    <div class="empty" id="catalog-empty" style="display:none">暂无已上线的书籍</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      未上线 (已注册)
+      <span class="badge" id="uncatalog-count">0</span>
+    </div>
+    <div class="toolbar">
+      <button id="uncatalog-select-all" class="btn-outline">全选</button>
+      <button id="catalog-add-btn" class="btn-add">加入目录</button>
+      <button id="rewrite-btn" class="btn-rewrite">重写正文</button>
+    </div>
+    <div class="grid" id="uncatalog-grid"></div>
+    <div class="empty" id="uncatalog-empty" style="display:none">所有已注册的书都在目录中了</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      main-repo 任务管理
+      <span class="badge" id="tasks-count">0</span>
+    </div>
+    <div id="tasks-grid"></div>
+    <div class="empty" id="tasks-empty" style="display:none">暂无 novel-editor 任务</div>
+  </div>
+</main>
+<div id="toast" class="toast"></div>
+
+<script>
+const API = (function() {
+  const p = location.pathname;
+  if (p.startsWith("/api/novel-editor/admin")) return "/api/novel-editor/api";
+  return "/api";
+})();
+
+let allBooks = [];
+let selected = new Set();
+let regSelected = new Set();
+
+function $id(id) { return document.getElementById(id); }
+
+function toast(msg, isError) {
+  const el = $id("toast");
+  el.textContent = msg;
+  el.className = "toast show" + (isError ? " error" : "");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("show"), 2500);
+}
+
+function renderCard(b, inCatalog) {
+  const div = document.createElement("div");
+  div.className = "card" + (selected.has(b.book_id) ? " selected" : "");
+  div.dataset.bid = b.book_id;
+  div.onclick = (e) => {
+    e.stopPropagation();
+    if (selected.has(b.book_id)) selected.delete(b.book_id);
+    else selected.add(b.book_id);
+    refreshSelection();
+  };
+
+  const cover = document.createElement("div");
+  cover.className = "cover";
+  if (b.cover_url) {
+    const img = document.createElement("img");
+    img.src = API + b.cover_url;
+    img.alt = b.source_title || b.name || b.book_id;
+    img.loading = "lazy";
+    img.onerror = () => { cover.innerHTML = '<span class="placeholder">📖</span>'; };
+    cover.appendChild(img);
+  } else {
+    cover.innerHTML = '<span class="placeholder">📖</span>';
+  }
+
+  const info = document.createElement("div");
+  info.className = "info";
+  info.innerHTML = `<div class="name" title="${b.source_title||b.name||b.book_id}">${b.source_title||b.name||b.book_id}</div>
+    <div class="meta">${b.phase||""} · ${b.total_chapters||0}章</div>`;
+
+  if (inCatalog) {
+    const badge = document.createElement("div");
+    badge.className = "catalog-badge";
+    badge.textContent = "已上线";
+    div.appendChild(badge);
+  }
+
+  const check = document.createElement("div");
+  check.className = "check";
+
+  div.append(cover, info, check);
+  return div;
+}
+
+function refreshSelection() {
+  document.querySelectorAll(".card").forEach(c => {
+    c.classList.toggle("selected", selected.has(c.dataset.bid));
+  });
+}
+
+async function load() {
+  const resp = await fetch(API + "/v1/admin/catalog/all");
+  const data = await resp.json();
+  allBooks = data.books || [];
+
+  const catalogBooks = allBooks.filter(b => b.in_catalog);
+  const uncatalogBooks = allBooks.filter(b => !b.in_catalog);
+
+  $id("catalog-count").textContent = catalogBooks.length;
+  $id("uncatalog-count").textContent = uncatalogBooks.length;
+  $id("header-count").textContent = `(${catalogBooks.length} 上线 / ${allBooks.length} 总计)`;
+
+  const cGrid = $id("catalog-grid");
+  cGrid.innerHTML = "";
+  catalogBooks.forEach(b => cGrid.appendChild(renderCard(b, true)));
+  $id("catalog-empty").style.display = catalogBooks.length ? "none" : "";
+
+  const uGrid = $id("uncatalog-grid");
+  uGrid.innerHTML = "";
+  uncatalogBooks.forEach(b => uGrid.appendChild(renderCard(b, false)));
+  $id("uncatalog-empty").style.display = uncatalogBooks.length ? "none" : "";
+
+  selected.clear();
+}
+
+async function doAction(url, label) {
+  const ids = Array.from(selected);
+  if (!ids.length) { toast("请先选择书籍", true); return; }
+  const resp = await fetch(API + url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ book_ids: ids }),
+  });
+  const data = await resp.json();
+  const sum = data.summary || {};
+  toast(`${label}完成: 成功 ${sum.added||sum.removed||0}, 跳过 ${sum.skipped||0}, 拒绝 ${sum.rejected||0}`);
+  selected.clear();
+  await load();
+}
+
+$id("search").addEventListener("input", (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  document.querySelectorAll(".card").forEach(c => {
+    const name = (c.querySelector(".name")?.textContent || "").toLowerCase();
+    c.style.display = !q || name.includes(q) ? "" : "none";
+  });
+});
+
+$id("catalog-select-all").onclick = () => {
+  document.querySelectorAll("#catalog-grid .card").forEach(c => selected.add(c.dataset.bid));
+  refreshSelection();
+};
+$id("uncatalog-select-all").onclick = () => {
+  document.querySelectorAll("#uncatalog-grid .card").forEach(c => selected.add(c.dataset.bid));
+  refreshSelection();
+};
+
+$id("catalog-add-btn").onclick = () => doAction("/v1/admin/catalog/add", "加入目录");
+$id("catalog-remove-btn").onclick = () => doAction("/v1/admin/catalog/remove", "从目录移除");
+$id("rewrite-btn").onclick = async () => {
+  const ids = Array.from(selected);
+  if (!ids.length) { toast("请先选择要重写的小说", true); return; }
+  const names = ids.join("、");
+  if (!confirm("确认重写以下小说的正文？\n\n" + names + "\n\n这会删除所有已生成的章节终稿和纪要，保留上帝视角和 Phase1 产物。操作不可逆！")) return;
+  const resp = await fetch(API + "/v1/admin/rewrite", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ book_ids: ids }),
+  });
+  const data = await resp.json();
+  const sum = data.summary || {};
+  toast("重写完成: 成功 " + (sum.ok || 0) + ", 跳过 " + (sum.skipped || 0) + ", 失败 " + (sum.errors || 0));
+  selected.clear();
+  await load();
+};
+
+// --- Register management ---
+
+function buildRegAPI(path) {
+  return API + "/v1/admin/register" + path;
+}
+
+function isQueuePath() {
+  return location.pathname.startsWith("/api/novel-editor/admin");
+}
+
+function statusTag(s) {
+  const labels = { queued: "排队", running: "处理中", completed: "已完成", failed: "失败" };
+  return `<span class="status-tag ${s}">${labels[s] || s}</span>`;
+}
+
+async function loadAvailable() {
+  const resp = await fetch(buildRegAPI("/available"));
+  const data = await resp.json();
+  const books = data.books || [];
+  $id("avail-count").textContent = books.length;
+
+  const grid = $id("avail-grid");
+  grid.innerHTML = "";
+  books.forEach(b => {
+    const div = document.createElement("div");
+    div.className = "card" + (regSelected.has(b.book_id) ? " selected" : "");
+    div.dataset.bid = b.book_id;
+    div.onclick = (e) => {
+      e.stopPropagation();
+      if (regSelected.has(b.book_id)) regSelected.delete(b.book_id);
+      else regSelected.add(b.book_id);
+      refreshRegSelection();
+    };
+
+    const cover = document.createElement("div");
+    cover.className = "cover";
+    cover.innerHTML = '<span class="placeholder">📖</span>';
+
+    const info = document.createElement("div");
+    info.className = "info";
+    info.innerHTML = `<div class="name" title="${b.book_id}">${b.book_id}</div>
+      <div class="meta">待注册</div>`;
+
+    const check = document.createElement("div");
+    check.className = "check";
+
+    div.append(cover, info, check);
+    grid.appendChild(div);
+  });
+  $id("avail-empty").style.display = books.length ? "none" : "";
+  regSelected.clear();
+}
+
+function refreshRegSelection() {
+  document.querySelectorAll("#avail-grid .card").forEach(c => {
+    c.classList.toggle("selected", regSelected.has(c.dataset.bid));
+  });
+}
+
+async function submitRegister() {
+  const ids = Array.from(regSelected);
+  if (!ids.length) { toast("请先选择要注册的小说", true); return; }
+  const platform = $id("reg-platform").value;
+  const track = $id("reg-track").value;
+  const resp = await fetch(buildRegAPI("/submit"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ book_ids: ids, platform, track }),
+  });
+  const data = await resp.json();
+  const sum = data.summary || {};
+  toast(`注册提交: 成功 ${sum.accepted||0}, 跳过 ${sum.rejected||0}, 失败 ${sum.failed||0}`);
+  regSelected.clear();
+  await Promise.all([loadAvailable(), loadQueue()]);
+}
+
+async function loadQueue() {
+  const resp = await fetch(buildRegAPI("/queue"));
+  const data = await resp.json();
+  const tasks = (data.tasks || []).filter(t => t.status !== "completed");
+  const isPaused = data.is_paused;
+  $id("queue-count").textContent = tasks.length;
+  $id("paused-label").style.display = isPaused ? "" : "none";
+  $id("queue-resume-btn").style.display = isPaused ? "" : "none";
+
+  const list = $id("queue-list");
+  list.innerHTML = "";
+  if (!tasks.length) { $id("queue-empty").style.display = ""; } else { $id("queue-empty").style.display = "none"; }
+  tasks.forEach(t => {
+    const posLabel = t.queue_position > 0 ? "#" + t.queue_position : (t.status === "running" ? "▶" : "-");
+    const item = document.createElement("div");
+    item.className = "queue-item " + t.status;
+    item.innerHTML = `<div class="pos">${posLabel}</div>
+      <div class="detail">
+        <div class="name">${t.book_id} ${statusTag(t.status)}</div>
+        <div class="sub">${t.platform||""} · ${t.track||""} · ${t.task_id||""}</div>
+        ${t.error ? `<div class="sub" style="color:#ef4444;">${t.error}</div>` : ""}
+      </div>
+      <div class="actions">
+        ${t.status === "failed" ? `<button class="btn-retry" data-tid="${t.task_id}">重试</button>` : ""}
+        ${t.status !== "running" ? `<button class="btn-delete" data-tid="${t.task_id}">移除</button>` : ""}
+      </div>`;
+    list.appendChild(item);
+  });
+
+  document.querySelectorAll(".queue-item .btn-retry").forEach(btn => {
+    btn.onclick = async () => {
+      const tid = btn.dataset.tid;
+      const r = await fetch(buildRegAPI("/retry"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id: tid }),
+      });
+      const d = await r.json();
+      toast("重试: " + (d.message || d.status));
+      await loadQueue();
+    };
+  });
+  document.querySelectorAll(".queue-item .btn-delete").forEach(btn => {
+    btn.onclick = async () => {
+      const tid = btn.dataset.tid;
+      if (!confirm("确认移除任务 " + tid + "？")) return;
+      const r = await fetch(buildRegAPI("/remove"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id: tid }),
+      });
+      const d = await r.json();
+      toast("移除: " + (d.message || d.status));
+      await loadQueue();
+      await loadAvailable();
+    };
+  });
+}
+
+$id("avail-select-all").onclick = () => {
+  document.querySelectorAll("#avail-grid .card").forEach(c => regSelected.add(c.dataset.bid));
+  refreshRegSelection();
+};
+$id("register-submit-btn").onclick = submitRegister;
+$id("queue-resume-btn").onclick = async () => {
+  const r = await fetch(buildRegAPI("/resume"), { method: "POST", headers: { "Content-Type": "application/json" } });
+  const d = await r.json();
+  toast("已恢复注册队列");
+  await loadQueue();
+};
+
+loadAvailable();
+loadQueue();
+
+let _queuePollTimer = null;
+function startQueuePoll() {
+  if (_queuePollTimer) return;
+  _queuePollTimer = setInterval(async () => {
+    const prevPaused = $id("paused-label").style.display !== "none";
+    await loadQueue();
+    const nowPaused = $id("paused-label").style.display !== "none";
+    if (prevPaused !== nowPaused || !nowPaused) {
+      await loadAvailable();
+      await load();
+    }
+  }, 5000);
+}
+startQueuePoll();
+
+load();
+
+async function loadTasks() {
+  const resp = await fetch((API === "/api" ? "" : "/api/novel-editor") + "/tasks");
+  const data = await resp.json();
+  const tasks = data.tasks || data.data?.tasks || [];
+  const grid = $id("tasks-grid");
+  grid.innerHTML = "";
+  $id("tasks-count").textContent = tasks.length;
+  if (!tasks.length) { $id("tasks-empty").style.display = ""; return; }
+  $id("tasks-empty").style.display = "none";
+  tasks.forEach(t => {
+    const div = document.createElement("div");
+    div.className = "task-row";
+    div.title = t.task_id;
+    div.innerHTML = `<span style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${t.novel_name||"-"}</div>
+        <div style="font-size:11px;color:#888;">${t.platform||""} · ch${t.chapter_number||0} · ${t.status||""}</div>
+      </span>
+      <button data-tid="${t.task_id}" class="btn-remove" style="font-size:11px;padding:4px 10px;flex-shrink:0;">下线</button>`;
+    grid.appendChild(div);
+  });
+  document.querySelectorAll(".task-row button").forEach(btn => {
+    btn.onclick = async () => {
+      const tid = btn.dataset.tid;
+      if (!confirm("确认下线任务 " + tid + "？这将停止并删除该任务。")) return;
+      const r = await fetch("/api/novel-editor/tasks/unregister", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id: tid }),
+      });
+      const d = await r.json();
+      if (d.code === 0) { toast("下线成功: " + tid); }
+      else { toast("下线失败: " + (d.message||""), true); }
+      loadTasks();
+    };
+  });
+}
+loadTasks();
+</script>
+
+<style>
+.task-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; background:#fff; border:1px solid #e0e0e0; border-radius:10px; margin-bottom:8px; }
+.task-row:hover { border-color:#f97316; }
+</style>
+</script>
+</body>
+</html>

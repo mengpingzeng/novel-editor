@@ -121,6 +121,9 @@ class BookMetadataResponse(BaseModel):
     chapters_completed: int = 0
     total_chapters: Optional[int] = None
     cover_image: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    track: Optional[str] = None
+    primary_category: Optional[str] = None
 
 
 class ErrorResponse(BaseModel):
@@ -144,6 +147,7 @@ class CatalogBook(BaseModel):
     chapters_completed: int = 0
     tags: List[str] = Field(default_factory=list)
     track: Optional[str] = None
+    primary_category: Optional[str] = None
 
 
 class CatalogListResponse(BaseModel):
@@ -328,7 +332,7 @@ class PhaseVerifyResponse(BaseModel):
 class NovelMetadataCreateRequest(BaseModel):
     book_id: str = Field(..., description="书名")
     title: List[str] = Field(..., min_length=5, description="候选书名，至少 5 个")
-    genre: str = Field(..., min_length=1, description="分类标签")
+    genre: str = Field(..., min_length=1, description="主分类（如 玄幻/仙侠/都市/言情）")
     protagonist: str = Field(..., min_length=1, description="主角名")
     description: str = Field(..., min_length=1, description="简介（必填）")
     cover_prompt: str = Field(..., min_length=1, description="封面生图 prompt（必填）")
@@ -338,6 +342,9 @@ class NovelMetadataCreateRequest(BaseModel):
     setting: str = Field(default="")
     source_title: str = Field(default="")
     source_author: str = Field(default="")
+    tags: List[str] = Field(default_factory=list, description="细粒度标签数组，来自 project_salt.json 的 classification.tags")
+    track: str = Field(default="", description="赛道，来自 project_salt.json 的 style_track")
+    primary_category: str = Field(default="", description="主分类，来自 project_salt.json 的 classification.primary_category")
 
 
 class NovelMetadataResponse(BaseModel):
@@ -356,3 +363,29 @@ class BookProgressResponse(BaseModel):
     phase: str
     checkpoints: Dict[str, Any]
     next_action: Optional[NextActionResponse]
+
+
+# ── Admin: 正文重写（清除正文，保留上帝视角 + Phase1）──
+
+class AdminRewriteRequest(BaseModel):
+    book_ids: List[str] = Field(..., min_length=1, description="要重写的书名列表")
+
+
+class AdminRewriteResult(BaseModel):
+    book_id: str
+    status: str
+    chapters_deleted: int = 0
+    minutes_deleted: int = 0
+    volumes_reset: List[int] = Field(default_factory=list, description="已重置的卷号")
+    error: Optional[str] = None
+
+
+class AdminRewriteResponse(BaseModel):
+    results: List[AdminRewriteResult]
+    summary: dict
+
+
+class ChapterNameValidateResponse(BaseModel):
+    valid: bool
+    name: str
+    errors: List[str] = Field(default_factory=list, description="too_long | has_symbols | duplicate")
