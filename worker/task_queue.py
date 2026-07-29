@@ -314,6 +314,14 @@ class TaskQueue:
             "message": "Task re-queued for retry (priority)",
         }
 
+    def find_active_task(self, task_type: str, book_id: str) -> Optional[str]:
+        """如果已有同类型、同 book 的 queued/running 任务，返回其 task_id，否则返回 None。"""
+        with self._tasks_lock:
+            for t in self._tasks.values():
+                if t.type == task_type and t.book_id == book_id and t.status in ("queued", "running"):
+                    return t.task_id
+        return None
+
     def remove_register_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         with self._tasks_lock:
             task = self._tasks.get(task_id)

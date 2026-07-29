@@ -35,6 +35,9 @@ _CHAPTER_PREFIX_RE = re.compile(r"^第\d+章\s*")
 
 def write_chapters(book_id: str, chapters: int = 1) -> str:
     from worker.task_queue import task_queue as tq
+    existing = tq.find_active_task("write", book_id)
+    if existing:
+        return existing
     return tq.submit("write", book_id, {"chapters": chapters})
 
 

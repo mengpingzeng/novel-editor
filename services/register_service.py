@@ -37,6 +37,9 @@ def register_book(source_name: str, platform: str, track: str = "auto",
                   word_count_multiplier: float = 1.0,
                   writer_model: str = "tokenhub/glm-5.2") -> str:
     from worker.task_queue import task_queue as tq
+    existing = tq.find_active_task("register", source_name)
+    if existing:
+        return existing
     return tq.submit("register", source_name, {
         "platform": platform,
         "track": track,

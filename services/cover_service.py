@@ -77,6 +77,10 @@ def execute_generate_cover(book_id: str, params: Dict[str, Any]) -> Dict[str, An
     except cover_gen.CoverError as e:
         return {"success": False, "error": str(e)}
 
+    if os.path.getsize(cover_path) < MIN_COVER_SIZE:
+        return {"success": False,
+                "error": f"Generated cover too small ({os.path.getsize(cover_path)} bytes, min {MIN_COVER_SIZE})"}
+
     resolved_version = os.path.basename(ver_dir)
     _update_metadata(book_id, resolved_version)
 
