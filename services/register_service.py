@@ -18,6 +18,7 @@ from typing import Any, Dict
 
 from config import config
 from services.book_state import (
+    converge_novel_metadata,
     ensure_book_state,
     load_book_state,
     try_set_phase,
@@ -234,6 +235,19 @@ def _finalize_register(book_id: str, writer_model: str = "tokenhub/glm-5.2"):
     ensure_book_state(book_id)
     _write_writer_model(book_id, writer_model)
     _cleanup_iteration_state(book_id)
+    _converge_metadata(book_id)
+
+
+def _converge_metadata(book_id: str):
+    """后置收敛：确保 novel_metadata.json 格式规范（补齐字段 + HMAC 签名）"""
+    try:
+        ok = converge_novel_metadata(book_id)
+        if ok:
+            log_step(book_id, "register", "novel_metadata.json 收敛完成（已签名）")
+        else:
+            log_step(book_id, "register", "novel_metadata.json 收敛跳过（文件不存在或状态缺失）")
+    except Exception as e:
+        log_step(book_id, "register", f"novel_metadata.json 收敛异常: {e}", "WARN")
 
 
 def _verify_phase1_checkpoints(book_id: str):

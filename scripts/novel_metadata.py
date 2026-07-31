@@ -90,7 +90,7 @@ def save_json(path: str, data: dict):
 # ── CLI 命令 ──────────────────────────────────────────────
 
 def cmd_create(args):
-    """创建 novel_metadata.json"""
+    """创建 novel_metadata.json（HMAC 签名 + 自动补齐 tags/track/primary_category）"""
     path = args.path
     titles = args.title
 
@@ -108,6 +108,18 @@ def cmd_create(args):
         print(f"[FAIL] 文件已存在：{path}，如需覆盖请先删除", file=sys.stderr)
         sys.exit(1)
 
+    # Parse book_id and version from path: .../workspace/books/{book_id}/versions/{v}/发布/novel_metadata.json
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    BOOKS = os.path.join(ROOT, "workspace", "books")
+    book_id = ""
+    version = "v1"
+    if path.startswith(BOOKS):
+        rel = os.path.relpath(path, BOOKS)
+        parts = rel.split(os.sep)
+        if len(parts) >= 4:
+            book_id = parts[0]
+            version = parts[2]
+
     data = {
         "title": titles,
         "title_en": args.title_en or "",
@@ -123,6 +135,9 @@ def cmd_create(args):
         "cover_prompt": args.cover_prompt or "",
         "genre": args.genre or "",
         "genre_en": args.genre_en or "",
+        "tags": [],
+        "track": "",
+        "primary_category": "",
         "word_count_target": args.word_count_target or 150000,
         "total_chapters": args.total_chapters or 60,
         "chapters_completed": 0,
@@ -130,12 +145,33 @@ def cmd_create(args):
         "protagonist": args.protagonist or "",
         "setting": args.setting or "",
         "chapter_names": [],
-        "cover_generated_by": args.cover_generated_by or "gemini-3.1-flash-image-preview",
-        "cover_resolution": args.cover_resolution or "3:4 (1K)",
+        "cover_generated_by": args.cover_generated_by or "",
+        "cover_resolution": args.cover_resolution or "",
         "created_at": datetime.now().strftime("%Y-%m-%d")
     }
-    save_json(path, data)
-    print(f"[OK] novel_metadata.json 创建成功，包含 {len(titles)} 个书名")
+
+    # Auto-fill tags/track/primary_category from project_salt.json
+    if book_id:
+        salt_path = os.path.join(BOOKS, book_id, "versions", version, "project_salt.json")
+        if os.path.exists(salt_path):
+            try:
+                with open(salt_path, "r", encoding="utf-8") as f:
+                    salt = json.load(f)
+                cls = salt.get("classification") or {}
+                data["tags"] = cls.get("tags") or []
+                data["track"] = salt.get("style_track") or ""
+                data["primary_category"] = cls.get("primary_category") or ""
+            except Exception:
+                pass
+
+    if book_id:
+        sys.path.insert(0, ROOT)
+        from services.book_state import save_novel_metadata
+        save_novel_metadata(book_id, version, data)
+        print(f"[OK] novel_metadata.json 创建成功（已 HMAC 签名），包含 {len(titles)} 个书名")
+    else:
+        save_json(path, data)
+        print(f"[OK] novel_metadata.json 创建成功，包含 {len(titles)} 个书名")
 
 
 def cmd_add_chapter(args):

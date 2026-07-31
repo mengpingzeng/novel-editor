@@ -300,6 +300,66 @@ def save_novel_metadata(book_id: str, version: str, data: Dict[str, Any]):
         pass
 
 
+def converge_novel_metadata(book_id: str) -> bool:
+    """收敛 novel_metadata.json 到规范格式：补齐缺失字段 + HMAC 签名。
+
+    三层修复策略：
+    1. 已有效签名 → 零开销直接返回
+    2. 无签名但文件存在 → raw 读取 → 从 project_salt.json 补齐 tags/track/primary_category
+                             → 补空 source.title/source.author → save_novel_metadata() 签名
+    3. 文件不存在 → 返回 False（无从修复）
+
+    Returns True if file is valid after convergence, False otherwise.
+    """
+    state = load_book_state(book_id)
+    if state is None:
+        return False
+    version = state.get("version", "v1")
+
+    meta = load_novel_metadata(book_id, version)
+    if meta is not None:
+        return True
+
+    meta_path = _metadata_path(book_id, version)
+    if not os.path.exists(meta_path):
+        return False
+
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    salt_path = os.path.join(BOOKS_DIR, book_id, "versions", version, "project_salt.json")
+    salt = {}
+    if os.path.exists(salt_path):
+        try:
+            with open(salt_path, "r", encoding="utf-8") as f:
+                salt = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            salt = {}
+
+    cls = salt.get("classification") or {}
+
+    if "tags" not in data or not data.get("tags"):
+        data["tags"] = cls.get("tags") or []
+    if "track" not in data or not data.get("track"):
+        data["track"] = salt.get("style_track") or ""
+    if "primary_category" not in data or not data.get("primary_category"):
+        data["primary_category"] = cls.get("primary_category") or ""
+
+    src = data.setdefault("source", {})
+    if not src.get("title"):
+        base = salt.get("base_novel") if isinstance(salt.get("base_novel"), dict) else {}
+        src["title"] = base.get("title") if base else book_id
+    if not src.get("author"):
+        base = salt.get("base_novel") if isinstance(salt.get("base_novel"), dict) else {}
+        src["author"] = base.get("author") if base else "原作者"
+
+    save_novel_metadata(book_id, version, data)
+    return True
+
+
 def ensure_book_state(book_id: str) -> Dict[str, Any]:
     """加载已有 state 或创建标准空模板。不再做文件系统扫描/重建。"""
     state = load_book_state(book_id)
@@ -398,8 +458,9 @@ def can_set_phase(book_id: str, target_phase: str) -> Tuple[bool, str]:
 
 
 def _verify_phase1_complete(state: Dict[str, Any]) -> Tuple[bool, str]:
-    """验证 Phase 1 所有步骤是否完成（含文件存在校验）"""
+    """验证 Phase 1 所有步骤是否完成（含文件存在校验 + novel_metadata HMAC/字段校验）"""
     book_id = state["book_id"]
+    version = state.get("version", "v1")
     ck = state.get("checkpoints", {}).get("phase1", {})
 
     for step in PHASE1_STEP_ORDER:
@@ -410,6 +471,19 @@ def _verify_phase1_complete(state: Dict[str, Any]) -> Tuple[bool, str]:
         path = node.get("path", "")
         if path and not os.path.exists(_artifact_path(book_id, path)):
             return False, f"Artifact for step '{step}' not found: {path}"
+
+        if step == "novel_metadata":
+            meta = load_novel_metadata(book_id, version)
+            if meta is None:
+                return False, "novel_metadata.json 未通过 HMAC 校验（缺少签名或签名无效）"
+            if not meta.get("description"):
+                return False, "novel_metadata.json 缺少 description 字段"
+            if not isinstance(meta.get("tags"), list) or not meta.get("tags"):
+                return False, "novel_metadata.json 缺少 tags 字段"
+            if not meta.get("track"):
+                return False, "novel_metadata.json 缺少 track 字段"
+            if not meta.get("primary_category"):
+                return False, "novel_metadata.json 缺少 primary_category 字段"
 
     return True, ""
 
